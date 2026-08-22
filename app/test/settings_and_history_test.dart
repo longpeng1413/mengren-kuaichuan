@@ -2,12 +2,31 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lan_transfer/src/chat/chat_message.dart';
 import 'package:lan_transfer/src/pairing/pairing_endpoint.dart';
+import 'package:lan_transfer/src/remote/remote_access_settings.dart';
 import 'package:lan_transfer/src/settings/app_settings.dart';
 import 'package:lan_transfer/src/settings/settings_page.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   setUp(() => SharedPreferences.setMockInitialValues({}));
+
+  test('remote access requires encrypted WSS and strong secrets', () {
+    const insecure = RemoteAccessSettings(
+      enabled: true,
+      relayUrl: 'ws://relay.example.com/v1/relay',
+      accessToken: '123456789012345678901234',
+      familySecret: 'family-secret',
+    );
+    expect(insecure.validate, throwsFormatException);
+
+    const secure = RemoteAccessSettings(
+      enabled: true,
+      relayUrl: 'wss://relay.example.com/v1/relay',
+      accessToken: '123456789012345678901234',
+      familySecret: 'family-secret',
+    );
+    expect(secure.validate, returnsNormally);
+  });
 
   test('persists theme and custom receive locations', () async {
     final store = AppSettingsStore();
@@ -74,6 +93,18 @@ void main() {
       ),
     );
 
+    expect(find.text('公网远程传输'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('传输时始终显示实际网络路线'),
+      180,
+      scrollable: find.byType(Scrollable),
+    );
+    expect(find.text('传输时始终显示实际网络路线'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('连接与高速传输'),
+      260,
+      scrollable: find.byType(Scrollable),
+    );
     expect(find.text('连接与高速传输'), findsOneWidget);
     expect(find.text('手机热点互传'), findsOneWidget);
     expect(find.text('大文件请使用 5 GHz 热点'), findsOneWidget);

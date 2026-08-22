@@ -340,7 +340,9 @@ class _ChatPageState extends State<ChatPage> {
           children: [
             Text(widget.device.displayName),
             Text(
-              widget.device.isPaired ? '已配对连接' : '局域网直连',
+              widget.device.isRemote
+                  ? '公网 VPS 中转 · 图片可随时停止'
+                  : widget.device.routeLabel,
               style: Theme.of(context).textTheme.labelSmall,
             ),
           ],

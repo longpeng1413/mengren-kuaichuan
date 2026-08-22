@@ -6,6 +6,7 @@ import 'package:launch_at_startup/launch_at_startup.dart';
 
 import '../app_version.dart';
 import '../diagnostics/diagnostic_log_service.dart';
+import '../remote/remote_access_settings.dart';
 import '../storage/received_file_service.dart';
 import 'app_settings.dart';
 
@@ -15,11 +16,16 @@ class SettingsPage extends StatefulWidget {
   const SettingsPage({
     required this.initialSettings,
     required this.saveSettings,
+    this.initialRemoteSettings = const RemoteAccessSettings(),
+    this.saveRemoteSettings,
     super.key,
   });
 
   final AppSettings initialSettings;
   final SaveAppSettings saveSettings;
+  final RemoteAccessSettings initialRemoteSettings;
+  final Future<void> Function(RemoteAccessSettings settings)?
+  saveRemoteSettings;
 
   @override
   State<SettingsPage> createState() => _SettingsPageState();
@@ -29,6 +35,7 @@ class _SettingsPageState extends State<SettingsPage> {
   final ReceivedFileService _fileService = ReceivedFileService();
   final DiagnosticLogService _diagnostics = DiagnosticLogService.instance;
   late AppSettings _settings;
+  late RemoteAccessSettings _remoteSettings;
   bool _working = false;
   DiagnosticLogInfo? _diagnosticInfo;
 
@@ -36,6 +43,7 @@ class _SettingsPageState extends State<SettingsPage> {
   void initState() {
     super.initState();
     _settings = widget.initialSettings;
+    _remoteSettings = widget.initialRemoteSettings;
     if (Platform.isAndroid) _refreshDiagnosticInfo();
   }
 
@@ -139,6 +147,114 @@ class _SettingsPageState extends State<SettingsPage> {
       await _save(_settings.copyWith(clearAndroidDirectory: true));
     } else {
       await _save(_settings.copyWith(clearWindowsDirectory: true));
+    }
+  }
+
+  Future<void> _configureRemoteAccess() async {
+    if (_working || widget.saveRemoteSettings == null) return;
+    final urlController = TextEditingController(text: _remoteSettings.relayUrl);
+    final tokenController = TextEditingController(
+      text: _remoteSettings.accessToken,
+    );
+    final secretController = TextEditingController(
+      text: _remoteSettings.familySecret,
+    );
+    var enabled = _remoteSettings.enabled;
+    RemoteAccessSettings? result;
+    try {
+      result = await showDialog<RemoteAccessSettings>(
+        context: context,
+        builder: (context) => StatefulBuilder(
+          builder: (context, setDialogState) => AlertDialog(
+            title: const Text('配置公网远程传输'),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('启用 VPS 远程连接'),
+                    subtitle: const Text('启用后设备列表会明确标记“公网 VPS 中转”'),
+                    value: enabled,
+                    onChanged: (value) => setDialogState(() => enabled = value),
+                  ),
+                  TextField(
+                    controller: urlController,
+                    enabled: enabled,
+                    keyboardType: TextInputType.url,
+                    decoration: const InputDecoration(
+                      labelText: '中转地址',
+                      hintText: 'wss://你的域名/v1/relay',
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: tokenController,
+                    enabled: enabled,
+                    obscureText: true,
+                    decoration: const InputDecoration(
+                      labelText: 'VPS 访问令牌（至少 24 位）',
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: secretController,
+                    enabled: enabled,
+                    obscureText: true,
+                    decoration: const InputDecoration(
+                      labelText: '家庭加密口令（12-256 位）',
+                      helperText: '两端填写相同口令；口令不会发送给 VPS',
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  const Text(
+                    'v1.7.0 首版仅发送在线文字、链接和不超过 20 MiB 的图片；'
+                    '远程大文件默认禁止，避免误用公网流量。',
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('取消'),
+              ),
+              FilledButton(
+                onPressed: () {
+                  final settings = RemoteAccessSettings(
+                    enabled: enabled,
+                    relayUrl: urlController.text.trim(),
+                    accessToken: tokenController.text,
+                    familySecret: secretController.text,
+                  );
+                  try {
+                    settings.validate();
+                    Navigator.pop(context, settings);
+                  } on FormatException catch (error) {
+                    ScaffoldMessenger.of(context)
+                        .showSnackBar(SnackBar(content: Text(error.message)));
+                  }
+                },
+                child: const Text('保存'),
+              ),
+            ],
+          ),
+        ),
+      );
+    } finally {
+      urlController.dispose();
+      tokenController.dispose();
+      secretController.dispose();
+    }
+    if (result == null) return;
+    setState(() => _working = true);
+    try {
+      await widget.saveRemoteSettings!(result);
+      if (mounted) setState(() => _remoteSettings = result!);
+    } catch (error) {
+      _showError('保存远程传输设置失败：$error');
+    } finally {
+      if (mounted) setState(() => _working = false);
     }
   }
 
@@ -247,6 +363,36 @@ class _SettingsPageState extends State<SettingsPage> {
             ),
           ],
           const Divider(height: 32),
+          Text('公网远程传输', style: Theme.of(context).textTheme.titleMedium),
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(
+              _remoteSettings.enabled
+                  ? Icons.cloud_done_outlined
+                  : Icons.cloud_off_outlined,
+            ),
+            title: Text(_remoteSettings.enabled ? '已启用 VPS 中转' : '未启用 VPS 中转'),
+            subtitle: Text(
+              _remoteSettings.enabled
+                  ? '${_remoteSettings.relayUrl}\n密钥保存在系统安全存储中'
+                  : '默认只使用局域网；配置 VPS 后可远程发送文字、链接和图片',
+            ),
+            isThreeLine: _remoteSettings.enabled,
+            trailing: const Icon(Icons.chevron_right),
+            onTap: _working ? null : _configureRemoteAccess,
+          ),
+          const Card(
+            margin: EdgeInsets.zero,
+            child: ListTile(
+              leading: Icon(Icons.route_outlined),
+              title: Text('传输时始终显示实际网络路线'),
+              subtitle: Text(
+                '局域网会显示“局域网直连”或“二维码本地连接”；跨地区时显示“公网 VPS 中转”。'
+                '公网图片发送可随时点击停止，接收端会清理未完成文件。',
+              ),
+            ),
+          ),
+          const Divider(height: 32),
           Text('连接与高速传输', style: Theme.of(context).textTheme.titleMedium),
           const SizedBox(height: 8),
           const Card(
@@ -280,11 +426,15 @@ class _SettingsPageState extends State<SettingsPage> {
             ),
           ),
           const SizedBox(height: 16),
-          const ListTile(
+          ListTile(
             contentPadding: EdgeInsets.zero,
-            leading: Icon(Icons.info_outline),
-            title: Text(appVersionLabel),
-            subtitle: Text('纯局域网传输，不经过公网服务器'),
+            leading: const Icon(Icons.info_outline),
+            title: const Text(appVersionLabel),
+            subtitle: Text(
+              _remoteSettings.enabled
+                  ? '局域网优先；仅远程设备使用加密 VPS 中转'
+                  : '默认纯局域网传输，不经过公网服务器',
+            ),
           ),
         ],
       ),

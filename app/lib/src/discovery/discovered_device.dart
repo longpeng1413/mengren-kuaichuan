@@ -1,6 +1,6 @@
 import 'dart:io';
 
-enum DeviceConnectionMode { direct, paired }
+enum DeviceConnectionMode { direct, paired, remote }
 
 class DiscoveredDevice {
   const DiscoveredDevice({
@@ -23,6 +23,13 @@ class DiscoveredDevice {
 
   String get shortId => deviceId.substring(0, 4).toUpperCase();
   bool get isPaired => connectionMode == DeviceConnectionMode.paired;
+  bool get isRemote => connectionMode == DeviceConnectionMode.remote;
+
+  String get routeLabel => switch (connectionMode) {
+    DeviceConnectionMode.direct => '局域网直连',
+    DeviceConnectionMode.paired => '二维码本地连接',
+    DeviceConnectionMode.remote => '公网 VPS 中转',
+  };
 
   DiscoveredDevice seenAgain({
     required String displayName,

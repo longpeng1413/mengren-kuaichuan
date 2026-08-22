@@ -11,6 +11,7 @@ import 'src/device/device_identity.dart';
 import 'src/desktop/desktop_tray_service.dart';
 import 'src/diagnostics/diagnostic_log_service.dart';
 import 'src/pairing/pairing_endpoint.dart';
+import 'src/remote/remote_access_settings.dart';
 import 'src/settings/app_settings.dart';
 
 Future<void> main() async {
@@ -50,6 +51,17 @@ Future<void> main() async {
     final pairingCode = await PairingStore().loadOrCreateCode();
     final settingsStore = AppSettingsStore();
     final settings = await settingsStore.load();
+    final remoteSettingsStore = RemoteAccessSettingsStore();
+    var remoteSettings = const RemoteAccessSettings();
+    try {
+      remoteSettings = await remoteSettingsStore.load();
+    } catch (error, stackTrace) {
+      await diagnostics.log(
+        'remote_secure_settings_load_failed',
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
     await DesktopTrayService.instance.initialize();
     if (Platform.isWindows && settings.launchAtStartup) {
       launchAtStartup.setup(
@@ -64,7 +76,9 @@ Future<void> main() async {
         initialIdentity: identity,
         pairingCode: pairingCode,
         initialSettings: settings,
+        initialRemoteSettings: remoteSettings,
         saveSettings: settingsStore.save,
+        saveRemoteSettings: remoteSettingsStore.save,
         saveIdentity: store.save,
       ),
     );

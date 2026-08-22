@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lan_transfer/src/app.dart';
 import 'package:lan_transfer/src/device/device_identity.dart';
+import 'package:lan_transfer/src/remote/remote_access_settings.dart';
 import 'package:lan_transfer/src/settings/app_settings.dart';
 
 void main() {
@@ -20,7 +21,9 @@ void main() {
         initialIdentity: initialIdentity,
         pairingCode: '12345678',
         initialSettings: const AppSettings(),
+        initialRemoteSettings: const RemoteAccessSettings(),
         saveSettings: (_) async {},
+        saveRemoteSettings: (_) async {},
         saveIdentity: (identity) async => savedIdentity = identity,
       ),
     );

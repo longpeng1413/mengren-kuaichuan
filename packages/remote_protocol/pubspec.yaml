@@ -1,0 +1,13 @@
+name: mengren_remote_protocol
+description: Shared end-to-end encrypted protocol for Mengren remote relay.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.13.1
+
+dependencies:
+  cryptography: ^2.9.0
+
+dev_dependencies:
+  test: ^1.31.1

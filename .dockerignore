@@ -1,0 +1,11 @@
+.git
+.github
+.tools
+.dart_tool
+app
+dist
+private-signing
+build
+**/.dart_tool
+**/build
+**/*.log

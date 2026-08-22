@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:mengren_remote_protocol/remote_protocol.dart';
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 
@@ -17,6 +18,7 @@ import 'discovery/discovery_service.dart';
 import 'pairing/pairing_endpoint.dart';
 import 'pairing/pairing_page.dart';
 import 'pairing/pairing_relay.dart';
+import 'remote/remote_access_settings.dart';
 import 'settings/app_settings.dart';
 import 'settings/settings_page.dart';
 import 'storage/received_file_service.dart';
@@ -31,7 +33,9 @@ class LanTransferApp extends StatefulWidget {
     required this.initialIdentity,
     required this.pairingCode,
     required this.initialSettings,
+    required this.initialRemoteSettings,
     required this.saveSettings,
+    required this.saveRemoteSettings,
     required this.saveIdentity,
     super.key,
   });
@@ -39,7 +43,9 @@ class LanTransferApp extends StatefulWidget {
   final DeviceIdentity initialIdentity;
   final String pairingCode;
   final AppSettings initialSettings;
+  final RemoteAccessSettings initialRemoteSettings;
   final Future<void> Function(AppSettings settings) saveSettings;
+  final Future<void> Function(RemoteAccessSettings settings) saveRemoteSettings;
   final SaveIdentity saveIdentity;
 
   @override
@@ -49,12 +55,14 @@ class LanTransferApp extends StatefulWidget {
 class _LanTransferAppState extends State<LanTransferApp> {
   late DeviceIdentity _identity;
   late AppSettings _settings;
+  late RemoteAccessSettings _remoteSettings;
 
   @override
   void initState() {
     super.initState();
     _identity = widget.initialIdentity;
     _settings = widget.initialSettings;
+    _remoteSettings = widget.initialRemoteSettings;
   }
 
   Future<void> _saveSettings(AppSettings settings) async {
@@ -65,6 +73,11 @@ class _LanTransferAppState extends State<LanTransferApp> {
   Future<void> _saveIdentity(DeviceIdentity identity) async {
     await widget.saveIdentity(identity);
     if (mounted) setState(() => _identity = identity);
+  }
+
+  Future<void> _saveRemoteSettings(RemoteAccessSettings settings) async {
+    await widget.saveRemoteSettings(settings);
+    if (mounted) setState(() => _remoteSettings = settings);
   }
 
   @override
@@ -91,7 +104,9 @@ class _LanTransferAppState extends State<LanTransferApp> {
         identity: _identity,
         pairingCode: widget.pairingCode,
         settings: _settings,
+        remoteSettings: _remoteSettings,
         saveSettings: _saveSettings,
+        saveRemoteSettings: _saveRemoteSettings,
         saveIdentity: _saveIdentity,
       ),
     );
@@ -103,7 +118,9 @@ class DeviceListPage extends StatefulWidget {
     required this.identity,
     required this.pairingCode,
     required this.settings,
+    required this.remoteSettings,
     required this.saveSettings,
+    required this.saveRemoteSettings,
     required this.saveIdentity,
     super.key,
   });
@@ -111,7 +128,9 @@ class DeviceListPage extends StatefulWidget {
   final DeviceIdentity identity;
   final String pairingCode;
   final AppSettings settings;
+  final RemoteAccessSettings remoteSettings;
   final SaveAppSettings saveSettings;
+  final Future<void> Function(RemoteAccessSettings settings) saveRemoteSettings;
   final SaveIdentity saveIdentity;
 
   @override
@@ -127,6 +146,8 @@ class _DeviceListPageState extends State<DeviceListPage> {
   final RemovedDeviceStore _removedDeviceStore = RemovedDeviceStore();
   final ReceivedFileService _receivedFileService = ReceivedFileService();
   final DiagnosticLogService _diagnostics = DiagnosticLogService.instance;
+  final RemoteRelayClient _remoteRelay = RemoteRelayClient();
+  final RemoteCrypto _remoteCrypto = RemoteCrypto();
   StreamSubscription<List<DiscoveredDevice>>? _devicesSubscription;
   StreamSubscription<List<DiscoveredDevice>>? _pairedDevicesSubscription;
   StreamSubscription<void>? _incomingSubscription;
@@ -137,7 +158,12 @@ class _DeviceListPageState extends State<DeviceListPage> {
   StreamSubscription<IncomingTextMessage>? _pairedMessageSubscription;
   StreamSubscription<TransferProgressUpdate>? _progressSubscription;
   StreamSubscription<TransferProgressUpdate>? _pairedProgressSubscription;
+  StreamSubscription<List<RemotePeer>>? _remotePeersSubscription;
+  StreamSubscription<EncryptedRemoteEnvelope>? _remoteEnvelopeSubscription;
+  StreamSubscription<RemoteRelayStatus>? _remoteStatusSubscription;
+  StreamSubscription<RemoteRelayException>? _remoteErrorSubscription;
   Timer? _reconnectTimer;
+  Timer? _remoteReconnectTimer;
   final ChatHistoryStore _chatStore = ChatHistoryStore();
   final Map<String, List<ChatMessage>> _chatHistory = {};
   final Map<String, ValueNotifier<List<ChatMessage>>> _chatNotifiers = {};
@@ -149,8 +175,12 @@ class _DeviceListPageState extends State<DeviceListPage> {
   PairingEndpoint? _savedPairing;
   List<DiscoveredDevice> _localDevices = const [];
   List<DiscoveredDevice> _pairedDevices = const [];
+  List<DiscoveredDevice> _remoteDevices = const [];
   List<DiscoveredDevice> _devices = const [];
   String? _statusError;
+  String? _remoteError;
+  RemoteRelayStatus _remoteStatus = RemoteRelayStatus.disconnected;
+  final Map<String, _RemoteIncomingImage> _remoteIncomingImages = {};
 
   @override
   void initState() {
@@ -220,11 +250,45 @@ class _DeviceListPageState extends State<DeviceListPage> {
     _pairedProgressSubscription = _pairingRelay.incomingProgress.listen(
       _receiveProgress,
     );
+    _remotePeersSubscription = _remoteRelay.peerUpdates.listen((peers) {
+      if (!mounted) return;
+      setState(() {
+        _remoteDevices = peers
+            .map(
+              (peer) => DiscoveredDevice(
+                deviceId: peer.deviceId,
+                displayName: peer.displayName,
+                platform: peer.platform,
+                address: InternetAddress.loopbackIPv4,
+                transferPort: 0,
+                lastSeen: DateTime.now(),
+                connectionMode: DeviceConnectionMode.remote,
+              ),
+            )
+            .toList();
+        _mergeDevices();
+      });
+    });
+    _remoteEnvelopeSubscription = _remoteRelay.envelopes.listen(
+      (envelope) => unawaited(_handleRemoteEnvelope(envelope)),
+    );
+    _remoteStatusSubscription = _remoteRelay.statuses.listen((status) {
+      if (mounted) setState(() => _remoteStatus = status);
+    });
+    _remoteErrorSubscription = _remoteRelay.errors.listen((error) {
+      unawaited(_diagnostics.log('remote_relay_error code=${error.code}'));
+      if (mounted) setState(() => _remoteError = _remoteErrorText(error.code));
+    });
     _receivedFileService.setSharedFilesListener(_receiveSharedFiles);
     unawaited(_receivedFileService.takeSharedFiles().then(_receiveSharedFiles));
     unawaited(_loadChatHistory());
     unawaited(_loadRemovedDevices());
     unawaited(_startTransferServer());
+    unawaited(_configureRemoteRelay());
+    _remoteReconnectTimer = Timer.periodic(
+      const Duration(seconds: 10),
+      (_) => unawaited(_connectRemoteRelay()),
+    );
   }
 
   Future<void> _loadRemovedDevices() async {
@@ -318,7 +382,218 @@ class _DeviceListPageState extends State<DeviceListPage> {
     _devices = mergeDiscoveredDevices(
       localDevices: _localDevices,
       pairedDevices: _pairedDevices,
+      remoteDevices: _remoteDevices,
     ).where((device) => !_removedDeviceIds.contains(device.deviceId)).toList();
+  }
+
+  Future<void> _configureRemoteRelay() async {
+    await _remoteRelay.disconnect();
+    if (!mounted) return;
+    setState(() {
+      _remoteDevices = const [];
+      _remoteError = null;
+      _mergeDevices();
+    });
+    await _connectRemoteRelay();
+  }
+
+  Future<void> _connectRemoteRelay() async {
+    final settings = widget.remoteSettings;
+    if (!settings.enabled ||
+        !settings.isConfigured ||
+        _remoteRelay.status != RemoteRelayStatus.disconnected) {
+      return;
+    }
+    final relayUri = settings.relayUri;
+    if (relayUri == null) return;
+    try {
+      await _diagnostics.log('remote_relay_connecting host=${relayUri.host}');
+      await _remoteRelay.connect(
+        relayUri: relayUri,
+        accessToken: settings.accessToken,
+        deviceId: widget.identity.deviceId,
+        displayName: widget.identity.displayName,
+        platform: widget.identity.platform,
+      );
+      await _diagnostics.log('remote_relay_connected host=${relayUri.host}');
+      if (mounted) setState(() => _remoteError = null);
+    } catch (error, stackTrace) {
+      await _diagnostics.log(
+        'remote_relay_connect_failed',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      if (mounted) setState(() => _remoteError = '公网 VPS 暂时无法连接，正在自动重试');
+    }
+  }
+
+  Future<void> _handleRemoteEnvelope(EncryptedRemoteEnvelope envelope) async {
+    late final RemotePayload payload;
+    try {
+      payload = await _remoteCrypto.decrypt(
+        envelope: envelope,
+        familySecret: widget.remoteSettings.familySecret,
+      );
+    } catch (error, stackTrace) {
+      await _diagnostics.log(
+        'remote_decrypt_failed',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      return;
+    }
+    final peerName = _remotePeerName(envelope.senderId);
+    switch (payload.kind) {
+      case RemotePayloadKind.text:
+      case RemotePayloadKind.link:
+        _appendChat(
+          ChatMessage(
+            id: envelope.messageId,
+            peerId: envelope.senderId,
+            peerName: peerName,
+            senderId: envelope.senderId,
+            senderName: peerName,
+            kind: ChatMessageKind.text,
+            sentAt: envelope.sentAt,
+            isOutgoing: false,
+            text: payload.text,
+          ),
+        );
+      case RemotePayloadKind.imageStart:
+        await _startRemoteImage(envelope.senderId, peerName, payload);
+      case RemotePayloadKind.imageChunk:
+        await _writeRemoteImageChunk(envelope.senderId, peerName, payload);
+      case RemotePayloadKind.imageEnd:
+        await _completeRemoteImage(envelope.senderId, peerName, payload);
+      case RemotePayloadKind.cancel:
+        await _cancelRemoteImage(payload.transferId!);
+    }
+  }
+
+  String _remotePeerName(String deviceId) {
+    for (final device in _remoteDevices) {
+      if (device.deviceId == deviceId) return device.displayName;
+    }
+    return '远程设备 ${deviceId.substring(0, 4).toUpperCase()}';
+  }
+
+  Future<void> _startRemoteImage(
+    String senderId,
+    String senderName,
+    RemotePayload payload,
+  ) async {
+    final transferId = payload.transferId!;
+    await _cancelRemoteImage(transferId);
+    try {
+      final incoming = await _RemoteIncomingImage.create(
+        transferId: transferId,
+        senderId: senderId,
+        senderName: senderName,
+        fileName: payload.fileName!,
+        totalBytes: payload.totalBytes!,
+      );
+      _remoteIncomingImages[transferId] = incoming;
+      _receiveProgress(
+        TransferProgressUpdate(
+          transferId: transferId,
+          peerId: senderId,
+          peerName: senderName,
+          fileName: incoming.fileName,
+          transferredBytes: 0,
+          totalBytes: incoming.totalBytes,
+        ),
+      );
+    } catch (error, stackTrace) {
+      await _diagnostics.log(
+        'remote_image_prepare_failed',
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+  }
+
+  Future<void> _writeRemoteImageChunk(
+    String senderId,
+    String senderName,
+    RemotePayload payload,
+  ) async {
+    final transferId = payload.transferId!;
+    final incoming = _remoteIncomingImages[transferId];
+    if (incoming == null ||
+        incoming.senderId != senderId ||
+        payload.chunkIndex != incoming.nextChunkIndex) {
+      await _cancelRemoteImage(transferId);
+      return;
+    }
+    final bytes = payload.bytes!;
+    if (incoming.receivedBytes + bytes.length > incoming.totalBytes) {
+      await _cancelRemoteImage(transferId);
+      return;
+    }
+    incoming.add(bytes);
+    _receiveProgress(
+      TransferProgressUpdate(
+        transferId: transferId,
+        peerId: senderId,
+        peerName: senderName,
+        fileName: incoming.fileName,
+        transferredBytes: incoming.receivedBytes,
+        totalBytes: incoming.totalBytes,
+      ),
+    );
+  }
+
+  Future<void> _completeRemoteImage(
+    String senderId,
+    String senderName,
+    RemotePayload payload,
+  ) async {
+    final transferId = payload.transferId!;
+    final incoming = _remoteIncomingImages.remove(transferId);
+    if (incoming == null ||
+        incoming.senderId != senderId ||
+        incoming.receivedBytes != incoming.totalBytes) {
+      await incoming?.abort();
+      _incomingProgressFor(senderId).value = null;
+      return;
+    }
+    try {
+      final file = await incoming.complete();
+      await _finalizeCompletedTransfer(
+        CompletedTransfer(
+          transferId: transferId,
+          senderId: senderId,
+          senderName: senderName,
+          file: file,
+          fileSize: incoming.totalBytes,
+        ),
+      );
+    } catch (error, stackTrace) {
+      await incoming.abort();
+      await _diagnostics.log(
+        'remote_image_finalize_failed',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      _incomingProgressFor(senderId).value = null;
+    }
+  }
+
+  Future<void> _cancelRemoteImage(String transferId) async {
+    final incoming = _remoteIncomingImages.remove(transferId);
+    if (incoming == null) return;
+    await incoming.abort();
+    _receiveProgress(
+      TransferProgressUpdate(
+        transferId: transferId,
+        peerId: incoming.senderId,
+        peerName: incoming.senderName,
+        fileName: incoming.fileName,
+        transferredBytes: incoming.receivedBytes,
+        totalBytes: incoming.totalBytes,
+        cancelled: true,
+      ),
+    );
   }
 
   void _showCompletedTransfer(CompletedTransfer transfer) {
@@ -447,6 +722,10 @@ class _DeviceListPageState extends State<DeviceListPage> {
       _discovery.updateIdentity(widget.identity);
       _pairingRelay.updateIdentity(widget.identity);
     }
+    if (oldWidget.remoteSettings != widget.remoteSettings ||
+        oldWidget.identity != widget.identity) {
+      unawaited(_configureRemoteRelay());
+    }
   }
 
   @override
@@ -461,10 +740,20 @@ class _DeviceListPageState extends State<DeviceListPage> {
     _pairedMessageSubscription?.cancel();
     _progressSubscription?.cancel();
     _pairedProgressSubscription?.cancel();
+    _remotePeersSubscription?.cancel();
+    _remoteEnvelopeSubscription?.cancel();
+    _remoteStatusSubscription?.cancel();
+    _remoteErrorSubscription?.cancel();
     _reconnectTimer?.cancel();
+    _remoteReconnectTimer?.cancel();
     _discovery.dispose();
     _transferServer.dispose();
     _receivedFileService.setSharedFilesListener(null);
+    unawaited(_remoteRelay.dispose());
+    for (final incoming in _remoteIncomingImages.values) {
+      unawaited(incoming.abort());
+    }
+    _remoteIncomingImages.clear();
     for (final notifier in _chatNotifiers.values) {
       notifier.dispose();
     }
@@ -591,6 +880,16 @@ class _DeviceListPageState extends State<DeviceListPage> {
     }
     if (selectedFiles.isEmpty) return;
 
+    if (device.isRemote) {
+      await _sendRemoteImages(
+        device,
+        selectedFiles,
+        onProgress,
+        cancellation: cancellation,
+      );
+      return;
+    }
+
     for (final selectedFile in selectedFiles) {
       cancellation?.throwIfCancelled();
       final file = File(selectedFile.path);
@@ -682,6 +981,32 @@ class _DeviceListPageState extends State<DeviceListPage> {
   }
 
   Future<void> _sendText(DiscoveredDevice device, String text) async {
+    if (device.isRemote) {
+      final trimmed = text.trim();
+      final uri = Uri.tryParse(trimmed);
+      final isLink =
+          uri != null &&
+          (uri.scheme == 'http' || uri.scheme == 'https') &&
+          uri.host.isNotEmpty;
+      final messageId = await _sendRemotePayload(
+        device.deviceId,
+        isLink ? RemotePayload.link(trimmed) : RemotePayload.text(trimmed),
+      );
+      _appendChat(
+        ChatMessage(
+          id: messageId,
+          peerId: device.deviceId,
+          peerName: device.displayName,
+          senderId: widget.identity.deviceId,
+          senderName: widget.identity.displayName,
+          kind: ChatMessageKind.text,
+          sentAt: DateTime.now(),
+          isOutgoing: true,
+          text: trimmed,
+        ),
+      );
+      return;
+    }
     late String messageId;
     final directDevice = _directDeviceFor(device.deviceId);
     if (_pairingRelay.hasSession(device.deviceId)) {
@@ -724,6 +1049,129 @@ class _DeviceListPageState extends State<DeviceListPage> {
         text: text.trim(),
       ),
     );
+  }
+
+  Future<String> _sendRemotePayload(
+    String recipientId,
+    RemotePayload payload,
+  ) async {
+    if (_remoteRelay.status != RemoteRelayStatus.connected) {
+      throw const TransferException('公网 VPS 尚未连接，请稍后重试');
+    }
+    final envelope = await _remoteCrypto.encrypt(
+      payload: payload,
+      familySecret: widget.remoteSettings.familySecret,
+      senderId: widget.identity.deviceId,
+      recipientId: recipientId,
+    );
+    await _remoteRelay.sendEnvelope(envelope);
+    return envelope.messageId;
+  }
+
+  Future<void> _sendRemoteImages(
+    DiscoveredDevice device,
+    List<({String name, String path})> selectedFiles,
+    void Function(String fileName, int sentBytes, int totalBytes) onProgress, {
+    TransferCancellationToken? cancellation,
+  }) async {
+    for (final selectedFile in selectedFiles) {
+      cancellation?.throwIfCancelled();
+      final mimeType = _remoteImageMimeType(selectedFile.name);
+      if (mimeType == null) {
+        throw const TransferException('v1.7.0 公网传输首版仅支持图片；视频和其他大文件请使用局域网');
+      }
+      final file = File(selectedFile.path);
+      if (!await file.exists()) {
+        throw TransferException('文件不存在或无法读取：${selectedFile.path}');
+      }
+      final fileSize = await file.length();
+      if (fileSize < 1 || fileSize > RemotePayload.maxRemoteImageBytes) {
+        throw const TransferException('公网图片最大支持 20 MiB，请改用局域网发送');
+      }
+      final transferId = randomRemoteId();
+      var remoteStarted = false;
+      var completed = false;
+      Future<void>? cancelDelivery;
+      Future<void> notifyCancel() {
+        return cancelDelivery ??= _sendRemotePayload(
+          device.deviceId,
+          RemotePayload.cancel(transferId: transferId),
+        ).then((_) {}).catchError((Object _) {});
+      }
+
+      final removeCancellationListener = cancellation?.addListener(() {
+        if (remoteStarted) unawaited(notifyCancel());
+      });
+      RandomAccessFile? source;
+      try {
+        onProgress(selectedFile.name, 0, fileSize);
+        await _sendRemotePayload(
+          device.deviceId,
+          RemotePayload.imageStart(
+            transferId: transferId,
+            fileName: selectedFile.name,
+            mimeType: mimeType,
+            totalBytes: fileSize,
+          ),
+        );
+        remoteStarted = true;
+        if (cancellation?.isCancelled ?? false) {
+          await notifyCancel();
+          throw const TransferCancelledException();
+        }
+        source = await file.open();
+        var sentBytes = 0;
+        var chunkIndex = 0;
+        while (sentBytes < fileSize) {
+          cancellation?.throwIfCancelled();
+          final bytes = await source.read(RemotePayload.remoteImageChunkBytes);
+          if (bytes.isEmpty) {
+            throw const TransferException('读取图片时意外结束');
+          }
+          await _sendRemotePayload(
+            device.deviceId,
+            RemotePayload.imageChunk(
+              transferId: transferId,
+              chunkIndex: chunkIndex,
+              bytes: bytes,
+            ),
+          );
+          sentBytes += bytes.length;
+          chunkIndex += 1;
+          onProgress(selectedFile.name, sentBytes, fileSize);
+        }
+        cancellation?.throwIfCancelled();
+        await _sendRemotePayload(
+          device.deviceId,
+          RemotePayload.imageEnd(transferId: transferId),
+        );
+        completed = true;
+        final isSharedCache = _sharedCachePaths.contains(file.path);
+        _appendChat(
+          ChatMessage(
+            id: transferId,
+            peerId: device.deviceId,
+            peerName: device.displayName,
+            senderId: widget.identity.deviceId,
+            senderName: widget.identity.displayName,
+            kind: ChatMessageKind.file,
+            sentAt: DateTime.now(),
+            isOutgoing: true,
+            fileName: selectedFile.name,
+            filePath: isSharedCache ? null : file.path,
+            displayLocation: isSharedCache ? '系统共享缓存已自动清理' : file.path,
+            fileSize: fileSize,
+          ),
+        );
+        if (_sharedCachePaths.remove(file.path) && await file.exists()) {
+          await file.delete();
+        }
+      } finally {
+        removeCancellationListener?.call();
+        await source?.close();
+        if (remoteStarted && !completed) await notifyCancel();
+      }
+    }
   }
 
   DiscoveredDevice? _directDeviceFor(String deviceId) {
@@ -786,9 +1234,11 @@ class _DeviceListPageState extends State<DeviceListPage> {
 
   Future<void> _removeDevice(DiscoveredDevice device) async {
     await _clearConversation(device.deviceId, deleteCache: true);
-    await _pairingRelay.disconnect(device.deviceId);
-    await _pairingStore.clearEndpoint();
-    _savedPairing = null;
+    if (device.isPaired) {
+      await _pairingRelay.disconnect(device.deviceId);
+      await _pairingStore.clearEndpoint();
+      _savedPairing = null;
+    }
     _removedDeviceIds.add(device.deviceId);
     await _removedDeviceStore.save(_removedDeviceIds);
     if (mounted) {
@@ -824,6 +1274,8 @@ class _DeviceListPageState extends State<DeviceListPage> {
         builder: (_) => SettingsPage(
           initialSettings: widget.settings,
           saveSettings: widget.saveSettings,
+          initialRemoteSettings: widget.remoteSettings,
+          saveRemoteSettings: widget.saveRemoteSettings,
         ),
       ),
     );
@@ -865,6 +1317,40 @@ class _DeviceListPageState extends State<DeviceListPage> {
                 ),
               ],
             ),
+          if (_remoteError != null)
+            MaterialBanner(
+              leading: const Icon(Icons.cloud_off_outlined),
+              content: Text(_remoteError!),
+              actions: [
+                TextButton(
+                  onPressed: _connectRemoteRelay,
+                  child: const Text('立即重试'),
+                ),
+                TextButton(
+                  onPressed: () => setState(() => _remoteError = null),
+                  child: const Text('知道了'),
+                ),
+              ],
+            ),
+          if (widget.remoteSettings.enabled)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: ListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(
+                  _remoteStatus == RemoteRelayStatus.connected
+                      ? Icons.cloud_done_outlined
+                      : Icons.cloud_sync_outlined,
+                ),
+                title: Text(
+                  _remoteStatus == RemoteRelayStatus.connected
+                      ? '公网 VPS 中转已连接'
+                      : '公网 VPS 中转正在连接',
+                ),
+                subtitle: const Text('局域网设备仍优先直连，不会绕行公网'),
+              ),
+            ),
           if (_pendingSharedFiles.isNotEmpty)
             MaterialBanner(
               leading: const Icon(Icons.share_outlined),
@@ -890,14 +1376,20 @@ class _DeviceListPageState extends State<DeviceListPage> {
                       return Card(
                         child: ListTile(
                           leading: Icon(
-                            device.platform == 'android'
+                            device.isRemote
+                                ? Icons.cloud_outlined
+                                : device.platform == 'android'
                                 ? Icons.smartphone
                                 : Icons.computer,
                           ),
                           title: Text(device.displayName),
                           subtitle: Text(
-                            '${device.platform == 'android' ? 'Android' : 'Windows'}'
-                            ' · ${device.isPaired ? '二维码连接' : device.address.address}'
+                            '${device.isRemote
+                                ? '远程 ${device.platform == 'android' ? 'Android' : 'Windows'}'
+                                : device.platform == 'android'
+                                ? 'Android'
+                                : 'Windows'}'
+                            ' · ${device.routeLabel}'
                             ' · ${device.shortId} · 点击打开对话',
                           ),
                           trailing: const Icon(Icons.chevron_right),
@@ -971,6 +1463,105 @@ String _formatBytes(int bytes) {
   final mebibytes = kibibytes / 1024;
   if (mebibytes < 1024) return '${mebibytes.toStringAsFixed(1)} MiB';
   return '${(mebibytes / 1024).toStringAsFixed(2)} GiB';
+}
+
+String? _remoteImageMimeType(String fileName) {
+  return switch (path.extension(fileName).toLowerCase()) {
+    '.jpg' || '.jpeg' => 'image/jpeg',
+    '.png' => 'image/png',
+    '.gif' => 'image/gif',
+    '.webp' => 'image/webp',
+    '.bmp' => 'image/bmp',
+    _ => null,
+  };
+}
+
+String _remoteErrorText(String code) => switch (code) {
+  'recipient_offline' => '对方远程设备已经离线',
+  'protocol_mismatch' => '远程协议版本不一致，请升级两端软件',
+  'connection_closed' || 'connection_error' => '公网 VPS 连接已断开，正在自动重试',
+  _ => '公网 VPS 返回错误：$code',
+};
+
+class _RemoteIncomingImage {
+  _RemoteIncomingImage._({
+    required this.transferId,
+    required this.senderId,
+    required this.senderName,
+    required this.fileName,
+    required this.totalBytes,
+    required this.partFile,
+    required this.sink,
+  });
+
+  final String transferId;
+  final String senderId;
+  final String senderName;
+  final String fileName;
+  final int totalBytes;
+  final File partFile;
+  final IOSink sink;
+  int receivedBytes = 0;
+  int nextChunkIndex = 0;
+  bool _closed = false;
+
+  static Future<_RemoteIncomingImage> create({
+    required String transferId,
+    required String senderId,
+    required String senderName,
+    required String fileName,
+    required int totalBytes,
+  }) async {
+    final root = await getTemporaryDirectory();
+    final directory = Directory(
+      path.join(root.path, 'remote-incoming', transferId),
+    );
+    await directory.create(recursive: true);
+    final safeName = path
+        .basename(fileName)
+        .replaceAll(RegExp(r'[<>:"/\\|?*\x00-\x1f]'), '_');
+    final finalName = safeName.isEmpty ? 'remote-image' : safeName;
+    final partFile = File(path.join(directory.path, '$finalName.part'));
+    return _RemoteIncomingImage._(
+      transferId: transferId,
+      senderId: senderId,
+      senderName: senderName,
+      fileName: finalName,
+      totalBytes: totalBytes,
+      partFile: partFile,
+      sink: partFile.openWrite(),
+    );
+  }
+
+  void add(List<int> bytes) {
+    if (_closed) throw StateError('remote image is already closed');
+    sink.add(bytes);
+    receivedBytes += bytes.length;
+    nextChunkIndex += 1;
+  }
+
+  Future<File> complete() async {
+    if (_closed) throw StateError('remote image is already closed');
+    _closed = true;
+    await sink.flush();
+    await sink.close();
+    if (receivedBytes != totalBytes) {
+      throw const FileSystemException('remote image size mismatch');
+    }
+    final target = File(
+      partFile.path.substring(0, partFile.path.length - '.part'.length),
+    );
+    return partFile.rename(target.path);
+  }
+
+  Future<void> abort() async {
+    if (!_closed) {
+      _closed = true;
+      await sink.close();
+    }
+    final directory = partFile.parent;
+    if (await directory.exists()) await directory.delete(recursive: true);
+  }
 }
 
 class _IdentityCard extends StatelessWidget {

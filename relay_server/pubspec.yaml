@@ -1,0 +1,14 @@
+name: mengren_relay_server
+description: Online-only encrypted relay for Mengren remote messages.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.13.1
+
+dependencies:
+  mengren_remote_protocol:
+    path: ../packages/remote_protocol
+
+dev_dependencies:
+  test: ^1.31.1
