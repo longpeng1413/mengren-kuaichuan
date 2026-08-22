@@ -1,0 +1,23 @@
+# Project-local SDKs and generated tool caches
+.tools/
+
+# Private Android update-signing material must never be committed
+private-signing/
+
+# Rebuildable release artifacts belong in GitHub Releases, not source history
+dist/
+
+# Flutter/Dart generated files
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+build/
+
+# Editors and operating system
+.idea/
+.vscode/
+*.iml
+Thumbs.db
+Desktop.ini
+flutter_*.log
