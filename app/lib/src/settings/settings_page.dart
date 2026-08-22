@@ -247,6 +247,39 @@ class _SettingsPageState extends State<SettingsPage> {
             ),
           ],
           const Divider(height: 32),
+          Text('连接与高速传输', style: Theme.of(context).textTheme.titleMedium),
+          const SizedBox(height: 8),
+          const Card(
+            margin: EdgeInsets.zero,
+            child: Column(
+              children: [
+                ListTile(
+                  leading: Icon(Icons.wifi_tethering),
+                  title: Text('手机热点互传'),
+                  subtitle: Text(
+                    '一台手机打开热点，另一台连接后，双方会自动出现在设备列表；未出现时使用二维码或手动 IP 连接。',
+                  ),
+                ),
+                Divider(height: 1),
+                ListTile(
+                  leading: Icon(Icons.speed_outlined),
+                  title: Text('大文件请使用 5 GHz 热点'),
+                  subtitle: Text(
+                    '2.4 GHz 热点常见速度约 8 MiB/s；切换 5 GHz、关闭兼容模式并让设备靠近，可显著提速，实际速度取决于手机。',
+                  ),
+                ),
+                Divider(height: 1),
+                ListTile(
+                  leading: Icon(Icons.hub_outlined),
+                  title: Text('连接注意事项'),
+                  subtitle: Text(
+                    '参与传输的设备应使用相同协议版本。Windows 首次使用需放行 UDP 53317 和 TCP 53318；连接异常时请导出诊断日志。',
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
           const ListTile(
             contentPadding: EdgeInsets.zero,
             leading: Icon(Icons.info_outline),

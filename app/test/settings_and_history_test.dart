@@ -1,7 +1,9 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lan_transfer/src/chat/chat_message.dart';
 import 'package:lan_transfer/src/pairing/pairing_endpoint.dart';
 import 'package:lan_transfer/src/settings/app_settings.dart';
+import 'package:lan_transfer/src/settings/settings_page.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -58,5 +60,23 @@ void main() {
     final store = RemovedDeviceStore();
     await store.save({'phone-1', 'laptop-2'});
     expect(await store.load(), {'phone-1', 'laptop-2'});
+  });
+
+  testWidgets('settings explains hotspot connection and 5 GHz speed', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsPage(
+          initialSettings: const AppSettings(),
+          saveSettings: (_) async {},
+        ),
+      ),
+    );
+
+    expect(find.text('连接与高速传输'), findsOneWidget);
+    expect(find.text('手机热点互传'), findsOneWidget);
+    expect(find.text('大文件请使用 5 GHz 热点'), findsOneWidget);
+    expect(find.text('连接注意事项'), findsOneWidget);
   });
 }

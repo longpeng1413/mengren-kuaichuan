@@ -1,7 +1,7 @@
 猛人快传 v1.6.1 完整开发资料包
 
 包含：
-1. app：Android/Windows Flutter 完整源代码、依赖锁定文件和 19 项测试。
+1. app：Android/Windows Flutter 完整源代码、依赖锁定文件和 20 项测试。
 2. docs：架构、安装测试和开发交接说明。
 3. scripts：中文路径环境下的 Flutter 构建包装脚本。
 4. packaging：Windows 防火墙脚本。
