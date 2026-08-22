@@ -2,11 +2,16 @@ import 'dart:async';
 import 'dart:io';
 
 import '../device/device_identity.dart';
+import '../network/local_network_service.dart';
 import 'discovered_device.dart';
 import 'discovery_message.dart';
 
 class DiscoveryService {
-  DiscoveryService(this._identity);
+  DiscoveryService(
+    this._identity, {
+    this._networkService = const LocalNetworkService(),
+    this._onLog,
+  });
 
   static const discoveryPort = 53317;
   static const transferPort = 53318;
@@ -14,11 +19,15 @@ class DiscoveryService {
   static const _offlineAfter = Duration(seconds: 7);
 
   DeviceIdentity _identity;
+  final LocalNetworkService _networkService;
+  final void Function(String message)? _onLog;
   RawDatagramSocket? _socket;
   StreamSubscription<RawSocketEvent>? _socketSubscription;
   Timer? _announceTimer;
   Timer? _cleanupTimer;
   bool _disposed = false;
+  bool _announcing = false;
+  String? _lastNetworkSignature;
 
   final Map<String, DiscoveredDevice> _devices = {};
   final StreamController<List<DiscoveredDevice>> _devicesController =
@@ -29,17 +38,20 @@ class DiscoveryService {
   Future<void> start() async {
     if (_disposed) return;
     await _bindSocket();
-    _announceTimer ??= Timer.periodic(_announceEvery, (_) => announce());
+    _announceTimer ??= Timer.periodic(
+      _announceEvery,
+      (_) => unawaited(announce()),
+    );
     _cleanupTimer ??= Timer.periodic(
       const Duration(seconds: 1),
       (_) => _removeOfflineDevices(),
     );
-    announce();
+    unawaited(announce());
   }
 
   void updateIdentity(DeviceIdentity identity) {
     _identity = identity;
-    announce();
+    unawaited(announce());
   }
 
   Future<void> _bindSocket() async {
@@ -59,7 +71,9 @@ class DiscoveryService {
         onDone: _restartSocket,
         cancelOnError: false,
       );
-    } on SocketException {
+      _onLog?.call('discovery_socket_started port=$discoveryPort');
+    } on SocketException catch (error) {
+      _onLog?.call('discovery_socket_bind_failed error=${error.message}');
       Timer(const Duration(seconds: 2), _bindSocket);
     }
   }
@@ -94,28 +108,61 @@ class DiscoveryService {
     }
   }
 
-  void announce() {
+  Future<void> announce() async {
+    if (_announcing || _disposed) return;
     final socket = _socket;
     if (socket == null) {
-      _bindSocket();
+      unawaited(_bindSocket());
       return;
     }
 
-    final message = DiscoveryMessage(
-      deviceId: _identity.deviceId,
-      displayName: _identity.displayName,
-      platform: _identity.platform,
-      transferPort: transferPort,
-    );
-
+    _announcing = true;
     try {
-      socket.send(
-        message.encode(),
-        InternetAddress('255.255.255.255'),
-        discoveryPort,
+      final addresses = await _networkService.listAddresses();
+      final targets = discoveryBroadcastTargets(addresses);
+      final signature = addresses
+          .map(
+            (item) =>
+                '${item.interfaceName}:${item.address}/${item.prefixLength}:${item.resolvedBroadcastAddress}',
+          )
+          .join(',');
+      if (signature != _lastNetworkSignature) {
+        _lastNetworkSignature = signature;
+        _onLog?.call(
+          'discovery_network_changed interfaces=${addresses.length} '
+          'targets=${targets.map((target) => target.address).join(',')}',
+        );
+      }
+
+      final message = DiscoveryMessage(
+        deviceId: _identity.deviceId,
+        displayName: _identity.displayName,
+        platform: _identity.platform,
+        transferPort: transferPort,
       );
-    } on SocketException {
-      _restartSocket();
+
+      final bytes = message.encode();
+      var sentAny = false;
+      for (final target in targets) {
+        try {
+          sentAny = socket.send(bytes, target, discoveryPort) > 0 || sentAny;
+        } on SocketException catch (error) {
+          _onLog?.call(
+            'discovery_target_failed target=${target.address} '
+            'error=${error.message}',
+          );
+        }
+      }
+      if (!sentAny) {
+        throw const SocketException('all discovery broadcast targets failed');
+      }
+    } on SocketException catch (error) {
+      _onLog?.call('discovery_announce_failed error=${error.message}');
+      unawaited(_restartSocket());
+    } catch (error) {
+      _onLog?.call('discovery_network_scan_failed error=$error');
+    } finally {
+      _announcing = false;
     }
   }
 

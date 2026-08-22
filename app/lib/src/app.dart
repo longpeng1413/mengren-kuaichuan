@@ -155,7 +155,10 @@ class _DeviceListPageState extends State<DeviceListPage> {
   @override
   void initState() {
     super.initState();
-    _discovery = DiscoveryService(widget.identity);
+    _discovery = DiscoveryService(
+      widget.identity,
+      onLog: (message) => unawaited(_diagnostics.log(message)),
+    );
     _pairingRelay = PairingRelay(
       identity: widget.identity,
       pairingCode: widget.pairingCode,

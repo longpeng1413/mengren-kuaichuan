@@ -1,11 +1,11 @@
-猛人快传 v1.6.0 完整开发资料包
+猛人快传 v1.6.1 完整开发资料包
 
 包含：
-1. app：Android/Windows Flutter 完整源代码、依赖锁定文件和 15 项测试。
+1. app：Android/Windows Flutter 完整源代码、依赖锁定文件和 19 项测试。
 2. docs：架构、安装测试和开发交接说明。
 3. scripts：中文路径环境下的 Flutter 构建包装脚本。
 4. packaging：Windows 防火墙脚本。
-5. dist：v1.6.0 Windows 和 Android 最终安装包。
+5. dist：v1.6.1 Windows 和 Android 最终安装包。
 6. private-signing/debug.keystore：当前 Android APK 更新签名密钥。
 
 不包含：
@@ -13,5 +13,5 @@
 - app/build 编译产物（约 3.53 GB，可重新构建）。
 - app/.dart_tool、Gradle、Pub 等缓存。
 
-请先阅读 docs/开发交接说明-v1.6.0.md。
+请先阅读 docs/开发交接说明-v1.6.1.md。
 private-signing 目录不得公开分享；完整开发资料包建议仅上传到自己的私密百度网盘。

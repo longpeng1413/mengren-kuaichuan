@@ -19,6 +19,8 @@ import io.flutter.embedding.android.FlutterActivity
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
 import java.io.InterruptedIOException
+import java.net.Inet4Address
+import java.net.NetworkInterface
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -69,6 +71,7 @@ class MainActivity : FlutterActivity() {
                         result.success(availableSharedFiles())
                     }
                     "diagnosticInfo" -> result.success(diagnosticInfo())
+                    "networkInterfaces" -> result.success(networkInterfaces())
                     "exportDiagnostics" -> exportDiagnostics(result)
                     "clearDiagnostics" -> {
                         clearDiagnostics()
@@ -206,6 +209,34 @@ class MainActivity : FlutterActivity() {
             "bytes" to files.sumOf { it.length() },
             "fileCount" to files.size.toLong(),
         )
+    }
+
+    private fun networkInterfaces(): List<Map<String, Any?>> {
+        return try {
+            val result = mutableListOf<Map<String, Any?>>()
+            val interfaces = NetworkInterface.getNetworkInterfaces()
+            while (interfaces != null && interfaces.hasMoreElements()) {
+                val network = interfaces.nextElement()
+                if (!network.isUp || network.isLoopback) continue
+                for (interfaceAddress in network.interfaceAddresses) {
+                    val address = interfaceAddress.address
+                    if (address !is Inet4Address || address.isLoopbackAddress) continue
+                    result.add(
+                        mapOf(
+                            "name" to network.name,
+                            "address" to address.hostAddress,
+                            "prefixLength" to interfaceAddress.networkPrefixLength.toInt(),
+                            "broadcast" to interfaceAddress.broadcast?.hostAddress,
+                        ),
+                    )
+                }
+            }
+            nativeLog("network_interfaces count=${result.size}")
+            result
+        } catch (error: Exception) {
+            nativeLog("network_interfaces_failed", error)
+            emptyList()
+        }
     }
 
     private fun clearDiagnostics() {

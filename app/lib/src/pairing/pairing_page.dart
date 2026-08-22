@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
+import '../network/local_network_service.dart';
 import 'pairing_endpoint.dart';
 
 typedef ConnectPairing = Future<void> Function(PairingEndpoint endpoint);
@@ -26,7 +27,8 @@ class PairingPage extends StatefulWidget {
 }
 
 class _PairingPageState extends State<PairingPage> {
-  List<String> _addresses = const [];
+  final LocalNetworkService _networkService = const LocalNetworkService();
+  List<LocalNetworkAddress> _addresses = const [];
   String? _selectedAddress;
   bool _loading = true;
   bool _connecting = false;
@@ -38,27 +40,16 @@ class _PairingPageState extends State<PairingPage> {
   }
 
   Future<void> _loadAddresses() async {
-    final addresses = <String>{};
+    List<LocalNetworkAddress> addresses = const [];
     try {
-      final interfaces = await NetworkInterface.list(
-        type: InternetAddressType.IPv4,
-        includeLoopback: false,
-      );
-      for (final interface in interfaces) {
-        for (final address in interface.addresses) {
-          if (_isUsablePrivateAddress(address.address)) {
-            addresses.add(address.address);
-          }
-        }
-      }
+      addresses = await _networkService.listAddresses();
     } catch (_) {
       // The manual pairing form remains available if enumeration fails.
     }
-    final sorted = addresses.toList()..sort();
     if (!mounted) return;
     setState(() {
-      _addresses = sorted;
-      _selectedAddress = sorted.isEmpty ? null : sorted.first;
+      _addresses = addresses;
+      _selectedAddress = addresses.isEmpty ? null : addresses.first.address;
       _loading = false;
     });
   }
@@ -115,13 +106,45 @@ class _PairingPageState extends State<PairingPage> {
             code: widget.pairingCode,
           );
     return Scaffold(
-      appBar: AppBar(title: const Text('二维码 / 手动连接')),
+      appBar: AppBar(
+        title: const Text('二维码 / 手动连接'),
+        actions: [
+          IconButton(
+            onPressed: _loading
+                ? null
+                : () {
+                    setState(() => _loading = true);
+                    _loadAddresses();
+                  },
+            tooltip: '刷新热点和局域网地址',
+            icon: const Icon(Icons.refresh),
+          ),
+        ],
+      ),
       body: ListView(
         padding: const EdgeInsets.all(20),
         children: [
           Text('让另一台设备连接我', style: Theme.of(context).textTheme.titleLarge),
           const SizedBox(height: 8),
-          const Text('两台设备不在同一子网时，用手机扫描电脑上的二维码。连接仍只在本地网络中传输。'),
+          const Text('另一台手机或电脑连接到同一 Wi-Fi/热点后，扫描此二维码即可直连。数据不会经过互联网。'),
+          const SizedBox(height: 12),
+          const Card(
+            child: Padding(
+              padding: EdgeInsets.all(14),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.wifi_tethering),
+                  SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      '手机热点互传：一台手机打开热点，另一台连接热点。任意一台显示二维码，另一台扫码；自动发现失败时仍可正常配对。',
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
           const SizedBox(height: 20),
           Center(
             child: _loading
@@ -155,9 +178,9 @@ class _PairingPageState extends State<PairingPage> {
                               value: address,
                               items: _addresses
                                   .map(
-                                    (value) => DropdownMenuItem(
-                                      value: value,
-                                      child: Text(value),
+                                    (value) => DropdownMenuItem<String>(
+                                      value: value.address,
+                                      child: Text(value.displayLabel),
                                     ),
                                   )
                                   .toList(),
@@ -168,7 +191,10 @@ class _PairingPageState extends State<PairingPage> {
                               },
                             )
                           else
-                            SelectableText('$address:${widget.port}'),
+                            SelectableText(
+                              '${_addresses.first.displayLabel}\n$address:${widget.port}',
+                              textAlign: TextAlign.center,
+                            ),
                           const SizedBox(height: 6),
                           Text(
                             '配对码：${formatPairingCode(widget.pairingCode)}',
@@ -188,7 +214,7 @@ class _PairingPageState extends State<PairingPage> {
             FilledButton.icon(
               onPressed: _connecting ? null : _scan,
               icon: const Icon(Icons.qr_code_scanner),
-              label: const Text('扫描电脑二维码'),
+              label: const Text('扫描另一台设备二维码'),
             ),
           const SizedBox(height: 10),
           OutlinedButton.icon(
@@ -231,7 +257,7 @@ class _QrScannerPageState extends State<_QrScannerPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('扫描电脑二维码')),
+      appBar: AppBar(title: const Text('扫描另一台设备二维码')),
       body: Stack(
         fit: StackFit.expand,
         children: [
@@ -351,14 +377,4 @@ class _ManualPairDialogState extends State<_ManualPairDialog> {
       ],
     );
   }
-}
-
-bool _isUsablePrivateAddress(String address) {
-  final parts = address.split('.').map(int.tryParse).toList();
-  if (parts.length != 4 || parts.any((part) => part == null)) return false;
-  final first = parts[0]!;
-  final second = parts[1]!;
-  return first == 10 ||
-      (first == 172 && second >= 16 && second <= 31) ||
-      (first == 192 && second == 168);
 }
