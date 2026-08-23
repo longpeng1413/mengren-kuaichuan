@@ -23,12 +23,19 @@ void main() {
         sentAt: DateTime.utc(2026, 8, 23),
       );
 
-      final decoded = await crypto.decrypt(
-        envelope: envelope,
-        familySecret: 'correct-family-secret',
-      );
+      final decoded = await RemoteCrypto(
+        keyDerivation: Pbkdf2(
+          macAlgorithm: Hmac.sha256(),
+          iterations: 10,
+          bits: 256,
+        ),
+      ).decrypt(envelope: envelope, familySecret: 'correct-family-secret');
       expect(decoded.kind, RemotePayloadKind.text);
       expect(decoded.text, '郑州发来的消息');
+      expect(
+        envelope.toJson()['protocol'],
+        EncryptedRemoteEnvelope.protocolVersion,
+      );
 
       await expectLater(
         crypto.decrypt(envelope: envelope, familySecret: 'wrong-family-secret'),
@@ -37,8 +44,8 @@ void main() {
     },
   );
 
-  test('image chunks preserve bytes and cancellation is explicit', () async {
-    final payload = RemotePayload.imageChunk(
+  test('file chunks preserve bytes and cancellation is explicit', () async {
+    final payload = RemotePayload.fileChunk(
       transferId: 'fedcba9876543210fedcba9876543210',
       chunkIndex: 3,
       bytes: List<int>.generate(1024, (index) => index % 251),
@@ -54,7 +61,7 @@ void main() {
       familySecret: 'correct-family-secret',
     );
 
-    expect(decoded.kind, RemotePayloadKind.imageChunk);
+    expect(decoded.kind, RemotePayloadKind.fileChunk);
     expect(decoded.chunkIndex, 3);
     expect(decoded.bytes, payload.bytes);
     expect(
@@ -63,21 +70,33 @@ void main() {
     );
   });
 
-  test('envelope parser rejects tampered metadata and oversized chunks', () {
-    final start = RemotePayload.imageStart(
-      transferId: '0123456789abcdef0123456789abcdef',
-      fileName: '照片.jpg',
-      mimeType: 'image/jpeg',
-      totalBytes: 1024,
-    );
-    expect(RemotePayload.tryFromJson(start.toJson()), isNotNull);
-    expect(
-      () => RemotePayload.imageChunk(
+  test(
+    'file metadata accepts APKs up to 200 MiB and rejects oversized chunks',
+    () {
+      final start = RemotePayload.fileStart(
         transferId: '0123456789abcdef0123456789abcdef',
-        chunkIndex: 0,
-        bytes: List<int>.filled(RemotePayload.remoteImageChunkBytes + 1, 0),
-      ),
-      throwsFormatException,
-    );
-  });
+        fileName: '猛人快传.apk',
+        mimeType: 'application/vnd.android.package-archive',
+        totalBytes: RemotePayload.maxRemoteFileBytes,
+      );
+      expect(RemotePayload.tryFromJson(start.toJson()), isNotNull);
+      expect(
+        () => RemotePayload.fileChunk(
+          transferId: '0123456789abcdef0123456789abcdef',
+          chunkIndex: 0,
+          bytes: List<int>.filled(RemotePayload.remoteFileChunkBytes + 1, 0),
+        ),
+        throwsFormatException,
+      );
+      expect(
+        () => RemotePayload.fileStart(
+          transferId: '0123456789abcdef0123456789abcdef',
+          fileName: '太大.zip',
+          mimeType: 'application/zip',
+          totalBytes: RemotePayload.maxRemoteFileBytes + 1,
+        ),
+        throwsFormatException,
+      );
+    },
+  );
 }

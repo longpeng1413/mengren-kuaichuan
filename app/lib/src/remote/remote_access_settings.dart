@@ -1,3 +1,6 @@
+import 'dart:convert';
+
+import 'package:crypto/crypto.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 class RemoteAccessSettings {
@@ -43,8 +46,14 @@ class RemoteAccessSettings {
     if (accessToken.length < 24) {
       throw const FormatException('VPS 访问令牌至少需要 24 个字符');
     }
+    if (accessToken != accessToken.trim()) {
+      throw const FormatException('VPS 访问令牌首尾不能包含空格');
+    }
     if (familySecret.length < 12 || familySecret.length > 256) {
       throw const FormatException('家庭加密口令需要 12-256 个字符');
+    }
+    if (familySecret != familySecret.trim()) {
+      throw const FormatException('家庭加密口令首尾不能包含空格');
     }
   }
 }
@@ -65,8 +74,8 @@ class RemoteAccessSettingsStore {
     return RemoteAccessSettings(
       enabled: values[_enabledKey] == 'true',
       relayUrl: values[_urlKey] ?? '',
-      accessToken: values[_tokenKey] ?? '',
-      familySecret: values[_secretKey] ?? '',
+      accessToken: (values[_tokenKey] ?? '').trim(),
+      familySecret: (values[_secretKey] ?? '').trim(),
     );
   }
 
@@ -75,8 +84,14 @@ class RemoteAccessSettingsStore {
     await Future.wait([
       _storage.write(key: _enabledKey, value: settings.enabled.toString()),
       _storage.write(key: _urlKey, value: settings.relayUrl.trim()),
-      _storage.write(key: _tokenKey, value: settings.accessToken),
-      _storage.write(key: _secretKey, value: settings.familySecret),
+      _storage.write(key: _tokenKey, value: settings.accessToken.trim()),
+      _storage.write(key: _secretKey, value: settings.familySecret.trim()),
     ]);
   }
+}
+
+String familySecretCheckCode(String value) {
+  final digest = sha256.convert(utf8.encode(value.trim())).toString();
+  return '${digest.substring(0, 4).toUpperCase()}-'
+      '${digest.substring(4, 8).toUpperCase()}';
 }

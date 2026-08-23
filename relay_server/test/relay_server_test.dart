@@ -32,7 +32,7 @@ void main() {
         alice.add(
           jsonEncode({
             'type': 'hello',
-            'protocol': 1,
+            'protocol': EncryptedRemoteEnvelope.protocolVersion,
             'deviceId': 'alice-device-012345',
             'displayName': '郑州手机',
             'platform': 'android',
@@ -44,7 +44,7 @@ void main() {
         bob.add(
           jsonEncode({
             'type': 'hello',
-            'protocol': 1,
+            'protocol': EncryptedRemoteEnvelope.protocolVersion,
             'deviceId': 'bob-device-01234567',
             'displayName': '安徽手机',
             'platform': 'android',
@@ -72,6 +72,15 @@ void main() {
             .decrypt(envelope: received!, familySecret: 'test-family-secret');
         expect(payload.text, '到家了吗？');
         expect((await aliceRelayed)['messageId'], envelope.messageId);
+        final aliceDelivered = _eventOfType(aliceEvents, 'delivered');
+        bob.add(
+          jsonEncode({
+            'type': 'receipt',
+            'messageId': envelope.messageId,
+            'status': 'delivered',
+          }),
+        );
+        expect((await aliceDelivered)['messageId'], envelope.messageId);
       } finally {
         await alice?.close();
         await bob?.close();
@@ -98,57 +107,177 @@ void main() {
     }
   });
 
-  test(
-    'remote clients expose peers and wait for relay acknowledgement',
-    () async {
-      const token = 'test-token-with-at-least-24-characters';
-      final server = RelayServer(accessToken: token);
-      await server.start(port: 0);
-      final alice = RemoteRelayClient();
-      final bob = RemoteRelayClient();
-      try {
-        final uri = Uri.parse('ws://127.0.0.1:${server.port}/v1/relay');
-        await alice.connect(
-          relayUri: uri,
-          accessToken: token,
-          deviceId: 'alice-device-012345',
-          displayName: '郑州手机',
-          platform: 'android',
-        );
-        final aliceSeesBob = alice.peerUpdates.firstWhere(
-          (peers) =>
-              peers.any((peer) => peer.deviceId == 'bob-device-01234567'),
-        );
-        await bob.connect(
-          relayUri: uri,
-          accessToken: token,
-          deviceId: 'bob-device-01234567',
-          displayName: '安徽手机',
-          platform: 'android',
-        );
-        await aliceSeesBob;
+  test('remote clients wait for the receiving app delivery receipt', () async {
+    const token = 'test-token-with-at-least-24-characters';
+    final server = RelayServer(accessToken: token);
+    await server.start(port: 0);
+    final alice = RemoteRelayClient();
+    final bob = RemoteRelayClient();
+    try {
+      final uri = Uri.parse('ws://127.0.0.1:${server.port}/v1/relay');
+      await alice.connect(
+        relayUri: uri,
+        accessToken: token,
+        deviceId: 'alice-device-012345',
+        displayName: '郑州手机',
+        platform: 'android',
+      );
+      final aliceSeesBob = alice.peerUpdates.firstWhere(
+        (peers) => peers.any((peer) => peer.deviceId == 'bob-device-01234567'),
+      );
+      await bob.connect(
+        relayUri: uri,
+        accessToken: token,
+        deviceId: 'bob-device-01234567',
+        displayName: '安徽手机',
+        platform: 'android',
+      );
+      await aliceSeesBob;
 
+      final incoming = bob.envelopes.first;
+      final envelope = await RemoteCrypto(keyDerivation: _fastKdf()).encrypt(
+        payload: RemotePayload.link('https://example.com/family'),
+        familySecret: 'test-family-secret',
+        senderId: 'alice-device-012345',
+        recipientId: 'bob-device-01234567',
+      );
+      final delivery = alice.sendEnvelope(envelope);
+      final received = await incoming;
+      final payload = await RemoteCrypto(keyDerivation: _fastKdf())
+          .decrypt(envelope: received, familySecret: 'test-family-secret');
+      await bob.acknowledgeEnvelope(received.messageId);
+      await delivery;
+      expect(payload.kind, RemotePayloadKind.link);
+      expect(payload.text, 'https://example.com/family');
+      expect(alice.status, RemoteRelayStatus.connected);
+    } finally {
+      await alice.dispose();
+      await bob.dispose();
+      await server.close();
+    }
+  });
+
+  test('receiving app can reject a message that cannot be decrypted', () async {
+    const token = 'test-token-with-at-least-24-characters';
+    final server = RelayServer(accessToken: token);
+    await server.start(port: 0);
+    final alice = RemoteRelayClient();
+    final bob = RemoteRelayClient();
+    try {
+      final uri = Uri.parse('ws://127.0.0.1:${server.port}/v1/relay');
+      await alice.connect(
+        relayUri: uri,
+        accessToken: token,
+        deviceId: 'alice-device-012345',
+        displayName: '郑州手机',
+        platform: 'android',
+      );
+      await bob.connect(
+        relayUri: uri,
+        accessToken: token,
+        deviceId: 'bob-device-01234567',
+        displayName: '安徽手机',
+        platform: 'android',
+      );
+      final incoming = bob.envelopes.first;
+      final envelope = await RemoteCrypto(keyDerivation: _fastKdf()).encrypt(
+        payload: RemotePayload.text('口令检查'),
+        familySecret: 'test-family-secret',
+        senderId: 'alice-device-012345',
+        recipientId: 'bob-device-01234567',
+      );
+      final delivery = alice.sendEnvelope(envelope);
+      final received = await incoming;
+      await bob.acknowledgeEnvelope(
+        received.messageId,
+        failureCode: 'decrypt_failed',
+      );
+      await expectLater(
+        delivery,
+        throwsA(
+          isA<RemoteRelayException>().having(
+            (error) => error.code,
+            'code',
+            'decrypt_failed',
+          ),
+        ),
+      );
+    } finally {
+      await alice.dispose();
+      await bob.dispose();
+      await server.close();
+    }
+  });
+
+  test('remote clients relay an arbitrary file lifecycle', () async {
+    const token = 'test-token-with-at-least-24-characters';
+    const secret = 'test-family-secret';
+    final server = RelayServer(accessToken: token);
+    await server.start(port: 0);
+    final alice = RemoteRelayClient();
+    final bob = RemoteRelayClient();
+    final crypto = RemoteCrypto(keyDerivation: _fastKdf());
+    try {
+      final uri = Uri.parse('ws://127.0.0.1:${server.port}/v1/relay');
+      await alice.connect(
+        relayUri: uri,
+        accessToken: token,
+        deviceId: 'alice-device-012345',
+        displayName: '郑州手机',
+        platform: 'android',
+      );
+      await bob.connect(
+        relayUri: uri,
+        accessToken: token,
+        deviceId: 'bob-device-01234567',
+        displayName: '安徽手机',
+        platform: 'android',
+      );
+      const transferId = '0123456789abcdef0123456789abcdef';
+      final payloads = [
+        RemotePayload.fileStart(
+          transferId: transferId,
+          fileName: '猛人快传.apk',
+          mimeType: 'application/vnd.android.package-archive',
+          totalBytes: 4,
+        ),
+        RemotePayload.fileChunk(
+          transferId: transferId,
+          chunkIndex: 0,
+          bytes: const [1, 2, 3, 4],
+        ),
+        RemotePayload.fileEnd(transferId: transferId),
+      ];
+      final receivedKinds = <RemotePayloadKind>[];
+      for (final payload in payloads) {
         final incoming = bob.envelopes.first;
-        final envelope = await RemoteCrypto(keyDerivation: _fastKdf()).encrypt(
-          payload: RemotePayload.link('https://example.com/family'),
-          familySecret: 'test-family-secret',
+        final envelope = await crypto.encrypt(
+          payload: payload,
+          familySecret: secret,
           senderId: 'alice-device-012345',
           recipientId: 'bob-device-01234567',
         );
-        await alice.sendEnvelope(envelope);
+        final delivery = alice.sendEnvelope(envelope);
         final received = await incoming;
-        final payload = await RemoteCrypto(keyDerivation: _fastKdf())
-            .decrypt(envelope: received, familySecret: 'test-family-secret');
-        expect(payload.kind, RemotePayloadKind.link);
-        expect(payload.text, 'https://example.com/family');
-        expect(alice.status, RemoteRelayStatus.connected);
-      } finally {
-        await alice.dispose();
-        await bob.dispose();
-        await server.close();
+        final decoded = await crypto.decrypt(
+          envelope: received,
+          familySecret: secret,
+        );
+        receivedKinds.add(decoded.kind);
+        await bob.acknowledgeEnvelope(received.messageId);
+        await delivery;
       }
-    },
-  );
+      expect(receivedKinds, [
+        RemotePayloadKind.fileStart,
+        RemotePayloadKind.fileChunk,
+        RemotePayloadKind.fileEnd,
+      ]);
+    } finally {
+      await alice.dispose();
+      await bob.dispose();
+      await server.close();
+    }
+  });
 
   test('remote client reports an offline recipient without queueing', () async {
     const token = 'test-token-with-at-least-24-characters';

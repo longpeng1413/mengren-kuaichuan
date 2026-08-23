@@ -341,7 +341,7 @@ class _ChatPageState extends State<ChatPage> {
             Text(widget.device.displayName),
             Text(
               widget.device.isRemote
-                  ? '公网 VPS 中转 · 图片可随时停止'
+                  ? '公网 VPS 中转 · 单文件 ≤ 200 MiB · 可随时停止'
                   : widget.device.routeLabel,
               style: Theme.of(context).textTheme.labelSmall,
             ),

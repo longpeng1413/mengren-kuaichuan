@@ -12,7 +12,7 @@ Future<void> main() async {
   }
   final port = int.tryParse(environment['MQT_RELAY_PORT'] ?? '') ?? 8080;
   final address = InternetAddress(environment['MQT_RELAY_BIND'] ?? '127.0.0.1');
-  final server = RelayServer(accessToken: token);
+  final server = RelayServer(accessToken: token, onLog: stdout.writeln);
   await server.start(address: address, port: port);
   stdout.writeln(
     'Mengren relay listening on ${address.address}:${server.port}',

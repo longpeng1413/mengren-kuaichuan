@@ -26,6 +26,74 @@ void main() {
       familySecret: 'family-secret',
     );
     expect(secure.validate, returnsNormally);
+    expect(
+      const RemoteAccessSettings(
+        enabled: true,
+        relayUrl: 'wss://relay.example.com/v1/relay',
+        accessToken: ' 123456789012345678901234',
+        familySecret: 'family-secret',
+      ).validate,
+      throwsFormatException,
+    );
+    expect(
+      familySecretCheckCode('family-secret'),
+      familySecretCheckCode(' family-secret '),
+    );
+  });
+
+  test('family secret check code ignores surrounding whitespace', () {
+    expect(
+      familySecretCheckCode('same-family-secret'),
+      familySecretCheckCode('  same-family-secret  '),
+    );
+    expect(
+      familySecretCheckCode('same-family-secret'),
+      isNot(familySecretCheckCode('different-family-secret')),
+    );
+  });
+
+  testWidgets('remote secrets can be revealed and compared by check code', (
+    tester,
+  ) async {
+    const remote = RemoteAccessSettings(
+      enabled: true,
+      relayUrl: 'wss://relay.example.com/v1/relay',
+      accessToken: '123456789012345678901234',
+      familySecret: 'same-family-secret',
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsPage(
+          initialSettings: const AppSettings(),
+          saveSettings: (_) async {},
+          initialRemoteSettings: remote,
+          saveRemoteSettings: (_) async {},
+        ),
+      ),
+    );
+
+    await tester.scrollUntilVisible(
+      find.text('已启用 VPS 中转'),
+      250,
+      scrollable: find.byType(Scrollable),
+    );
+    await tester.tap(find.text('已启用 VPS 中转'));
+    await tester.pumpAndSettle();
+
+    final tokenField = find.byKey(const Key('remote_access_token_field'));
+    final secretField = find.byKey(const Key('remote_family_secret_field'));
+    expect(tester.widget<TextField>(tokenField).obscureText, isTrue);
+    expect(tester.widget<TextField>(secretField).obscureText, isTrue);
+    expect(
+      find.textContaining(familySecretCheckCode(remote.familySecret)),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.byKey(const Key('remote_access_token_visibility')));
+    await tester.tap(find.byKey(const Key('remote_family_secret_visibility')));
+    await tester.pump();
+    expect(tester.widget<TextField>(tokenField).obscureText, isFalse);
+    expect(tester.widget<TextField>(secretField).obscureText, isFalse);
   });
 
   test('persists theme and custom receive locations', () async {

@@ -49,11 +49,11 @@ class RemoteRelayException implements Exception {
 }
 
 class RemoteRelayClient {
-  RemoteRelayClient({this.ackTimeout = const Duration(seconds: 15)});
+  RemoteRelayClient({this.ackTimeout = const Duration(seconds: 25)});
 
   final Duration ackTimeout;
   final Map<String, RemotePeer> _peers = {};
-  final Map<String, Completer<void>> _pendingAcks = {};
+  final Map<String, Completer<void>> _pendingDeliveries = {};
   final StreamController<RemoteRelayStatus> _statusController =
       StreamController<RemoteRelayStatus>.broadcast();
   final StreamController<List<RemotePeer>> _peersController =
@@ -133,7 +133,7 @@ class RemoteRelayClient {
       socket.add(
         jsonEncode({
           'type': 'hello',
-          'protocol': 1,
+          'protocol': EncryptedRemoteEnvelope.protocolVersion,
           'deviceId': deviceId,
           'displayName': displayName.trim(),
           'platform': platform,
@@ -163,17 +163,46 @@ class RemoteRelayClient {
     if (envelope.senderId != _deviceId) {
       throw const RemoteRelayException('sender_mismatch');
     }
-    if (_pendingAcks.containsKey(envelope.messageId)) {
+    if (_pendingDeliveries.containsKey(envelope.messageId)) {
       throw const RemoteRelayException('duplicate_message_id');
     }
-    final ack = Completer<void>();
-    _pendingAcks[envelope.messageId] = ack;
+    final delivery = Completer<void>();
+    _pendingDeliveries[envelope.messageId] = delivery;
     socket.add(jsonEncode({'type': 'relay', 'envelope': envelope.toJson()}));
     try {
-      await ack.future.timeout(ackTimeout);
+      await delivery.future.timeout(
+        ackTimeout,
+        onTimeout: () => throw const RemoteRelayException('delivery_timeout'),
+      );
     } finally {
-      _pendingAcks.remove(envelope.messageId);
+      _pendingDeliveries.remove(envelope.messageId);
     }
+  }
+
+  Future<void> acknowledgeEnvelope(
+    String messageId, {
+    String? failureCode,
+  }) async {
+    final socket = _socket;
+    if (_status != RemoteRelayStatus.connected || socket == null) {
+      throw const RemoteRelayException('not_connected');
+    }
+    if (!RegExp(r'^[a-f0-9]{32}$').hasMatch(messageId)) {
+      throw const FormatException('invalid remote message id');
+    }
+    if (failureCode != null &&
+        failureCode != 'decrypt_failed' &&
+        failureCode != 'processing_failed') {
+      throw const FormatException('invalid delivery failure code');
+    }
+    socket.add(
+      jsonEncode({
+        'type': 'receipt',
+        'messageId': messageId,
+        'status': failureCode == null ? 'delivered' : 'rejected',
+        if (failureCode != null) 'code': failureCode,
+      }),
+    );
   }
 
   void _handleEvent(Object? event) {
@@ -188,7 +217,7 @@ class RemoteRelayClient {
     if (decoded is! Map<String, dynamic>) return;
     switch (decoded['type']) {
       case 'helloAck':
-        if (decoded['protocol'] != 1) {
+        if (decoded['protocol'] != EncryptedRemoteEnvelope.protocolVersion) {
           _helloAck?.completeError(
             const RemoteRelayException('protocol_mismatch'),
           );
@@ -224,10 +253,18 @@ class RemoteRelayClient {
         );
         if (envelope != null && envelope.recipientId == _deviceId) {
           _envelopesController.add(envelope);
+        } else {
+          _publishError(const RemoteRelayException('invalid_envelope'));
         }
       case 'relayed':
+        // This only confirms that the VPS accepted the envelope. The sender
+        // remains pending until the receiving app reports successful handling.
+        return;
+      case 'delivered':
         final messageId = decoded['messageId'];
-        final pending = messageId is String ? _pendingAcks[messageId] : null;
+        final pending = messageId is String
+            ? _pendingDeliveries[messageId]
+            : null;
         if (pending != null && !pending.isCompleted) pending.complete();
       case 'error':
         final code = decoded['code'];
@@ -235,7 +272,9 @@ class RemoteRelayClient {
           code is String ? code : 'unknown_server_error',
         );
         final messageId = decoded['messageId'];
-        final pending = messageId is String ? _pendingAcks[messageId] : null;
+        final pending = messageId is String
+            ? _pendingDeliveries[messageId]
+            : null;
         if (pending != null && !pending.isCompleted) {
           pending.completeError(error);
         } else {
@@ -258,12 +297,12 @@ class RemoteRelayClient {
     _helloAck = null;
     _peers.clear();
     _publishPeers();
-    for (final pending in _pendingAcks.values) {
+    for (final pending in _pendingDeliveries.values) {
       if (!pending.isCompleted) {
         pending.completeError(RemoteRelayException(code));
       }
     }
-    _pendingAcks.clear();
+    _pendingDeliveries.clear();
     _setStatus(RemoteRelayStatus.disconnected);
   }
 

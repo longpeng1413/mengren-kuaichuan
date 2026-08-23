@@ -159,7 +159,7 @@ class _DeviceListPageState extends State<DeviceListPage> {
   StreamSubscription<TransferProgressUpdate>? _progressSubscription;
   StreamSubscription<TransferProgressUpdate>? _pairedProgressSubscription;
   StreamSubscription<List<RemotePeer>>? _remotePeersSubscription;
-  StreamSubscription<EncryptedRemoteEnvelope>? _remoteEnvelopeSubscription;
+  StreamSubscription<void>? _remoteEnvelopeSubscription;
   StreamSubscription<RemoteRelayStatus>? _remoteStatusSubscription;
   StreamSubscription<RemoteRelayException>? _remoteErrorSubscription;
   Timer? _reconnectTimer;
@@ -180,7 +180,7 @@ class _DeviceListPageState extends State<DeviceListPage> {
   String? _statusError;
   String? _remoteError;
   RemoteRelayStatus _remoteStatus = RemoteRelayStatus.disconnected;
-  final Map<String, _RemoteIncomingImage> _remoteIncomingImages = {};
+  final Map<String, _RemoteIncomingFile> _remoteIncomingFiles = {};
 
   @override
   void initState() {
@@ -269,9 +269,9 @@ class _DeviceListPageState extends State<DeviceListPage> {
         _mergeDevices();
       });
     });
-    _remoteEnvelopeSubscription = _remoteRelay.envelopes.listen(
-      (envelope) => unawaited(_handleRemoteEnvelope(envelope)),
-    );
+    _remoteEnvelopeSubscription = _remoteRelay.envelopes
+        .asyncMap(_handleRemoteEnvelope)
+        .listen((_) {});
     _remoteStatusSubscription = _remoteRelay.statuses.listen((status) {
       if (mounted) setState(() => _remoteStatus = status);
     });
@@ -428,6 +428,12 @@ class _DeviceListPageState extends State<DeviceListPage> {
   }
 
   Future<void> _handleRemoteEnvelope(EncryptedRemoteEnvelope envelope) async {
+    await _diagnostics.log(
+      'remote_envelope_received '
+      'message=${envelope.messageId.substring(0, 8)} '
+      'sender=${envelope.senderId.substring(0, 8)} '
+      'bytes=${envelope.cipherText.length}',
+    );
     late final RemotePayload payload;
     try {
       payload = await _remoteCrypto.decrypt(
@@ -440,34 +446,84 @@ class _DeviceListPageState extends State<DeviceListPage> {
         error: error,
         stackTrace: stackTrace,
       );
+      await _acknowledgeRemoteEnvelope(
+        envelope.messageId,
+        failureCode: 'decrypt_failed',
+      );
+      _showRemoteReceiveError('收到一条无法解密的公网消息，请核对所有设备的家庭加密口令');
       return;
     }
     final peerName = _remotePeerName(envelope.senderId);
-    switch (payload.kind) {
-      case RemotePayloadKind.text:
-      case RemotePayloadKind.link:
-        _appendChat(
-          ChatMessage(
-            id: envelope.messageId,
-            peerId: envelope.senderId,
-            peerName: peerName,
-            senderId: envelope.senderId,
-            senderName: peerName,
-            kind: ChatMessageKind.text,
-            sentAt: envelope.sentAt,
-            isOutgoing: false,
-            text: payload.text,
-          ),
-        );
-      case RemotePayloadKind.imageStart:
-        await _startRemoteImage(envelope.senderId, peerName, payload);
-      case RemotePayloadKind.imageChunk:
-        await _writeRemoteImageChunk(envelope.senderId, peerName, payload);
-      case RemotePayloadKind.imageEnd:
-        await _completeRemoteImage(envelope.senderId, peerName, payload);
-      case RemotePayloadKind.cancel:
-        await _cancelRemoteImage(payload.transferId!);
+    try {
+      switch (payload.kind) {
+        case RemotePayloadKind.text:
+        case RemotePayloadKind.link:
+          _appendChat(
+            ChatMessage(
+              id: envelope.messageId,
+              peerId: envelope.senderId,
+              peerName: peerName,
+              senderId: envelope.senderId,
+              senderName: peerName,
+              kind: ChatMessageKind.text,
+              sentAt: envelope.sentAt,
+              isOutgoing: false,
+              text: payload.text,
+            ),
+          );
+        case RemotePayloadKind.fileStart:
+          await _startRemoteFile(envelope.senderId, peerName, payload);
+        case RemotePayloadKind.fileChunk:
+          await _writeRemoteFileChunk(envelope.senderId, peerName, payload);
+        case RemotePayloadKind.fileEnd:
+          await _completeRemoteFile(envelope.senderId, peerName, payload);
+        case RemotePayloadKind.cancel:
+          await _cancelRemoteFile(payload.transferId!);
+      }
+    } catch (error, stackTrace) {
+      await _diagnostics.log(
+        'remote_processing_failed kind=${payload.kind.name}',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      await _acknowledgeRemoteEnvelope(
+        envelope.messageId,
+        failureCode: 'processing_failed',
+      );
+      _showRemoteReceiveError('公网消息已经收到，但保存或处理失败，请导出诊断日志');
+      return;
     }
+    await _diagnostics.log(
+      'remote_envelope_processed '
+      'message=${envelope.messageId.substring(0, 8)} '
+      'kind=${payload.kind.name}',
+    );
+    await _acknowledgeRemoteEnvelope(envelope.messageId);
+  }
+
+  Future<void> _acknowledgeRemoteEnvelope(
+    String messageId, {
+    String? failureCode,
+  }) async {
+    try {
+      await _remoteRelay.acknowledgeEnvelope(
+        messageId,
+        failureCode: failureCode,
+      );
+    } catch (error, stackTrace) {
+      await _diagnostics.log(
+        'remote_receipt_failed message=${messageId.substring(0, 8)}',
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+  }
+
+  void _showRemoteReceiveError(String message) {
+    if (!mounted) return;
+    setState(() => _remoteError = message);
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
   }
 
   String _remotePeerName(String deviceId) {
@@ -477,22 +533,22 @@ class _DeviceListPageState extends State<DeviceListPage> {
     return '远程设备 ${deviceId.substring(0, 4).toUpperCase()}';
   }
 
-  Future<void> _startRemoteImage(
+  Future<void> _startRemoteFile(
     String senderId,
     String senderName,
     RemotePayload payload,
   ) async {
     final transferId = payload.transferId!;
-    await _cancelRemoteImage(transferId);
+    await _cancelRemoteFile(transferId);
     try {
-      final incoming = await _RemoteIncomingImage.create(
+      final incoming = await _RemoteIncomingFile.create(
         transferId: transferId,
         senderId: senderId,
         senderName: senderName,
         fileName: payload.fileName!,
         totalBytes: payload.totalBytes!,
       );
-      _remoteIncomingImages[transferId] = incoming;
+      _remoteIncomingFiles[transferId] = incoming;
       _receiveProgress(
         TransferProgressUpdate(
           transferId: transferId,
@@ -505,30 +561,31 @@ class _DeviceListPageState extends State<DeviceListPage> {
       );
     } catch (error, stackTrace) {
       await _diagnostics.log(
-        'remote_image_prepare_failed',
+        'remote_file_prepare_failed',
         error: error,
         stackTrace: stackTrace,
       );
+      rethrow;
     }
   }
 
-  Future<void> _writeRemoteImageChunk(
+  Future<void> _writeRemoteFileChunk(
     String senderId,
     String senderName,
     RemotePayload payload,
   ) async {
     final transferId = payload.transferId!;
-    final incoming = _remoteIncomingImages[transferId];
+    final incoming = _remoteIncomingFiles[transferId];
     if (incoming == null ||
         incoming.senderId != senderId ||
         payload.chunkIndex != incoming.nextChunkIndex) {
-      await _cancelRemoteImage(transferId);
-      return;
+      await _cancelRemoteFile(transferId);
+      throw const TransferException('远程文件分块顺序无效');
     }
     final bytes = payload.bytes!;
     if (incoming.receivedBytes + bytes.length > incoming.totalBytes) {
-      await _cancelRemoteImage(transferId);
-      return;
+      await _cancelRemoteFile(transferId);
+      throw const TransferException('远程文件大小超过声明值');
     }
     incoming.add(bytes);
     _receiveProgress(
@@ -543,19 +600,19 @@ class _DeviceListPageState extends State<DeviceListPage> {
     );
   }
 
-  Future<void> _completeRemoteImage(
+  Future<void> _completeRemoteFile(
     String senderId,
     String senderName,
     RemotePayload payload,
   ) async {
     final transferId = payload.transferId!;
-    final incoming = _remoteIncomingImages.remove(transferId);
+    final incoming = _remoteIncomingFiles.remove(transferId);
     if (incoming == null ||
         incoming.senderId != senderId ||
         incoming.receivedBytes != incoming.totalBytes) {
       await incoming?.abort();
       _incomingProgressFor(senderId).value = null;
-      return;
+      throw const TransferException('远程文件不完整');
     }
     try {
       final file = await incoming.complete();
@@ -571,16 +628,17 @@ class _DeviceListPageState extends State<DeviceListPage> {
     } catch (error, stackTrace) {
       await incoming.abort();
       await _diagnostics.log(
-        'remote_image_finalize_failed',
+        'remote_file_finalize_failed',
         error: error,
         stackTrace: stackTrace,
       );
       _incomingProgressFor(senderId).value = null;
+      rethrow;
     }
   }
 
-  Future<void> _cancelRemoteImage(String transferId) async {
-    final incoming = _remoteIncomingImages.remove(transferId);
+  Future<void> _cancelRemoteFile(String transferId) async {
+    final incoming = _remoteIncomingFiles.remove(transferId);
     if (incoming == null) return;
     await incoming.abort();
     _receiveProgress(
@@ -750,10 +808,10 @@ class _DeviceListPageState extends State<DeviceListPage> {
     _transferServer.dispose();
     _receivedFileService.setSharedFilesListener(null);
     unawaited(_remoteRelay.dispose());
-    for (final incoming in _remoteIncomingImages.values) {
+    for (final incoming in _remoteIncomingFiles.values) {
       unawaited(incoming.abort());
     }
-    _remoteIncomingImages.clear();
+    _remoteIncomingFiles.clear();
     for (final notifier in _chatNotifiers.values) {
       notifier.dispose();
     }
@@ -881,7 +939,7 @@ class _DeviceListPageState extends State<DeviceListPage> {
     if (selectedFiles.isEmpty) return;
 
     if (device.isRemote) {
-      await _sendRemoteImages(
+      await _sendRemoteFiles(
         device,
         selectedFiles,
         onProgress,
@@ -1064,11 +1122,21 @@ class _DeviceListPageState extends State<DeviceListPage> {
       senderId: widget.identity.deviceId,
       recipientId: recipientId,
     );
-    await _remoteRelay.sendEnvelope(envelope);
+    try {
+      await _remoteRelay.sendEnvelope(envelope);
+    } on RemoteRelayException catch (error) {
+      throw TransferException(_remoteDeliveryErrorText(error.code));
+    }
+    await _diagnostics.log(
+      'remote_delivery_confirmed '
+      'message=${envelope.messageId.substring(0, 8)} '
+      'recipient=${recipientId.substring(0, 8)} '
+      'kind=${payload.kind.name}',
+    );
     return envelope.messageId;
   }
 
-  Future<void> _sendRemoteImages(
+  Future<void> _sendRemoteFiles(
     DiscoveredDevice device,
     List<({String name, String path})> selectedFiles,
     void Function(String fileName, int sentBytes, int totalBytes) onProgress, {
@@ -1076,17 +1144,14 @@ class _DeviceListPageState extends State<DeviceListPage> {
   }) async {
     for (final selectedFile in selectedFiles) {
       cancellation?.throwIfCancelled();
-      final mimeType = _remoteImageMimeType(selectedFile.name);
-      if (mimeType == null) {
-        throw const TransferException('v1.7.0 公网传输首版仅支持图片；视频和其他大文件请使用局域网');
-      }
+      final mimeType = _remoteFileMimeType(selectedFile.name);
       final file = File(selectedFile.path);
       if (!await file.exists()) {
         throw TransferException('文件不存在或无法读取：${selectedFile.path}');
       }
       final fileSize = await file.length();
-      if (fileSize < 1 || fileSize > RemotePayload.maxRemoteImageBytes) {
-        throw const TransferException('公网图片最大支持 20 MiB，请改用局域网发送');
+      if (fileSize < 1 || fileSize > RemotePayload.maxRemoteFileBytes) {
+        throw const TransferException('公网中转单个文件最大支持 200 MiB，请改用局域网发送');
       }
       final transferId = randomRemoteId();
       var remoteStarted = false;
@@ -1107,7 +1172,7 @@ class _DeviceListPageState extends State<DeviceListPage> {
         onProgress(selectedFile.name, 0, fileSize);
         await _sendRemotePayload(
           device.deviceId,
-          RemotePayload.imageStart(
+          RemotePayload.fileStart(
             transferId: transferId,
             fileName: selectedFile.name,
             mimeType: mimeType,
@@ -1124,13 +1189,13 @@ class _DeviceListPageState extends State<DeviceListPage> {
         var chunkIndex = 0;
         while (sentBytes < fileSize) {
           cancellation?.throwIfCancelled();
-          final bytes = await source.read(RemotePayload.remoteImageChunkBytes);
+          final bytes = await source.read(RemotePayload.remoteFileChunkBytes);
           if (bytes.isEmpty) {
-            throw const TransferException('读取图片时意外结束');
+            throw const TransferException('读取文件时意外结束');
           }
           await _sendRemotePayload(
             device.deviceId,
-            RemotePayload.imageChunk(
+            RemotePayload.fileChunk(
               transferId: transferId,
               chunkIndex: chunkIndex,
               bytes: bytes,
@@ -1143,7 +1208,7 @@ class _DeviceListPageState extends State<DeviceListPage> {
         cancellation?.throwIfCancelled();
         await _sendRemotePayload(
           device.deviceId,
-          RemotePayload.imageEnd(transferId: transferId),
+          RemotePayload.fileEnd(transferId: transferId),
         );
         completed = true;
         final isSharedCache = _sharedCachePaths.contains(file.path);
@@ -1465,14 +1530,26 @@ String _formatBytes(int bytes) {
   return '${(mebibytes / 1024).toStringAsFixed(2)} GiB';
 }
 
-String? _remoteImageMimeType(String fileName) {
+String _remoteFileMimeType(String fileName) {
   return switch (path.extension(fileName).toLowerCase()) {
     '.jpg' || '.jpeg' => 'image/jpeg',
     '.png' => 'image/png',
     '.gif' => 'image/gif',
     '.webp' => 'image/webp',
     '.bmp' => 'image/bmp',
-    _ => null,
+    '.mp4' => 'video/mp4',
+    '.mkv' => 'video/x-matroska',
+    '.mov' => 'video/quicktime',
+    '.avi' => 'video/x-msvideo',
+    '.mp3' => 'audio/mpeg',
+    '.wav' => 'audio/wav',
+    '.pdf' => 'application/pdf',
+    '.apk' => 'application/vnd.android.package-archive',
+    '.zip' => 'application/zip',
+    '.7z' => 'application/x-7z-compressed',
+    '.rar' => 'application/vnd.rar',
+    '.txt' => 'text/plain',
+    _ => 'application/octet-stream',
   };
 }
 
@@ -1483,8 +1560,17 @@ String _remoteErrorText(String code) => switch (code) {
   _ => '公网 VPS 返回错误：$code',
 };
 
-class _RemoteIncomingImage {
-  _RemoteIncomingImage._({
+String _remoteDeliveryErrorText(String code) => switch (code) {
+  'recipient_offline' || 'recipient_disconnected' => '对方远程设备已经离线',
+  'delivery_timeout' => '对方没有确认收到，请确认对方软件保持运行并升级到同一版本',
+  'decrypt_failed' => '对方无法解密，请重新核对所有设备的家庭加密口令',
+  'processing_failed' => '对方已收到密文，但保存或处理失败，请导出对方诊断日志',
+  'protocol_mismatch' => '远程协议版本不一致，请升级两端软件',
+  _ => '公网传输失败：$code',
+};
+
+class _RemoteIncomingFile {
+  _RemoteIncomingFile._({
     required this.transferId,
     required this.senderId,
     required this.senderName,
@@ -1505,7 +1591,7 @@ class _RemoteIncomingImage {
   int nextChunkIndex = 0;
   bool _closed = false;
 
-  static Future<_RemoteIncomingImage> create({
+  static Future<_RemoteIncomingFile> create({
     required String transferId,
     required String senderId,
     required String senderName,
@@ -1520,9 +1606,9 @@ class _RemoteIncomingImage {
     final safeName = path
         .basename(fileName)
         .replaceAll(RegExp(r'[<>:"/\\|?*\x00-\x1f]'), '_');
-    final finalName = safeName.isEmpty ? 'remote-image' : safeName;
+    final finalName = safeName.isEmpty ? 'remote-file' : safeName;
     final partFile = File(path.join(directory.path, '$finalName.part'));
-    return _RemoteIncomingImage._(
+    return _RemoteIncomingFile._(
       transferId: transferId,
       senderId: senderId,
       senderName: senderName,
@@ -1534,19 +1620,19 @@ class _RemoteIncomingImage {
   }
 
   void add(List<int> bytes) {
-    if (_closed) throw StateError('remote image is already closed');
+    if (_closed) throw StateError('remote file is already closed');
     sink.add(bytes);
     receivedBytes += bytes.length;
     nextChunkIndex += 1;
   }
 
   Future<File> complete() async {
-    if (_closed) throw StateError('remote image is already closed');
+    if (_closed) throw StateError('remote file is already closed');
     _closed = true;
     await sink.flush();
     await sink.close();
     if (receivedBytes != totalBytes) {
-      throw const FileSystemException('remote image size mismatch');
+      throw const FileSystemException('remote file size mismatch');
     }
     final target = File(
       partFile.path.substring(0, partFile.path.length - '.part'.length),

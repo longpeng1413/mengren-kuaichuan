@@ -12,7 +12,7 @@ class EncryptedRemoteEnvelope {
     required this.mac,
   });
 
-  static const protocolVersion = 1;
+  static const protocolVersion = 3;
   static const maximumCipherTextBytes = 512 * 1024;
 
   final String messageId;

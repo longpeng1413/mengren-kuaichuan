@@ -154,12 +154,14 @@ class _SettingsPageState extends State<SettingsPage> {
     if (_working || widget.saveRemoteSettings == null) return;
     final urlController = TextEditingController(text: _remoteSettings.relayUrl);
     final tokenController = TextEditingController(
-      text: _remoteSettings.accessToken,
+      text: _remoteSettings.accessToken.trim(),
     );
     final secretController = TextEditingController(
-      text: _remoteSettings.familySecret,
+      text: _remoteSettings.familySecret.trim(),
     );
     var enabled = _remoteSettings.enabled;
+    var showAccessToken = false;
+    var showFamilySecret = false;
     RemoteAccessSettings? result;
     try {
       result = await showDialog<RemoteAccessSettings>(
@@ -189,27 +191,72 @@ class _SettingsPageState extends State<SettingsPage> {
                   ),
                   const SizedBox(height: 10),
                   TextField(
+                    key: const Key('remote_access_token_field'),
                     controller: tokenController,
                     enabled: enabled,
-                    obscureText: true,
-                    decoration: const InputDecoration(
+                    obscureText: !showAccessToken,
+                    decoration: InputDecoration(
                       labelText: 'VPS 访问令牌（至少 24 位）',
+                      helperText: '用于连接 VPS；已显示远程设备说明此项有效',
+                      suffixIcon: IconButton(
+                        key: const Key('remote_access_token_visibility'),
+                        tooltip: showAccessToken ? '隐藏访问令牌' : '显示访问令牌',
+                        onPressed: enabled
+                            ? () => setDialogState(
+                                () => showAccessToken = !showAccessToken,
+                              )
+                            : null,
+                        icon: Icon(
+                          showAccessToken
+                              ? Icons.visibility_off_outlined
+                              : Icons.visibility_outlined,
+                        ),
+                      ),
                     ),
                   ),
                   const SizedBox(height: 10),
                   TextField(
+                    key: const Key('remote_family_secret_field'),
                     controller: secretController,
                     enabled: enabled,
-                    obscureText: true,
-                    decoration: const InputDecoration(
+                    obscureText: !showFamilySecret,
+                    onChanged: (_) => setDialogState(() {}),
+                    decoration: InputDecoration(
                       labelText: '家庭加密口令（12-256 位）',
-                      helperText: '两端填写相同口令；口令不会发送给 VPS',
+                      helperText: '三端必须完全相同；首尾空格会自动去除',
+                      suffixIcon: IconButton(
+                        key: const Key('remote_family_secret_visibility'),
+                        tooltip: showFamilySecret ? '隐藏家庭加密口令' : '显示家庭加密口令',
+                        onPressed: enabled
+                            ? () => setDialogState(
+                                () => showFamilySecret = !showFamilySecret,
+                              )
+                            : null,
+                        icon: Icon(
+                          showFamilySecret
+                              ? Icons.visibility_off_outlined
+                              : Icons.visibility_outlined,
+                        ),
+                      ),
                     ),
                   ),
+                  if (enabled && secretController.text.trim().isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        '家庭口令校验码：'
+                        '${familySecretCheckCode(secretController.text)}\n'
+                        '仅在本机计算，不会发送；三台设备必须显示相同校验码。',
+                        key: const Key('remote_family_secret_check_code'),
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ),
+                  ],
                   const SizedBox(height: 12),
                   const Text(
-                    'v1.7.0 首版仅发送在线文字、链接和不超过 20 MiB 的图片；'
-                    '远程大文件默认禁止，避免误用公网流量。',
+                    '公网中转支持在线文字、链接，以及单个不超过 200 MiB 的图片、'
+                    '视频、APK、压缩包和其他文件。请注意移动数据与 VPS 流量。',
                   ),
                 ],
               ),
@@ -224,8 +271,8 @@ class _SettingsPageState extends State<SettingsPage> {
                   final settings = RemoteAccessSettings(
                     enabled: enabled,
                     relayUrl: urlController.text.trim(),
-                    accessToken: tokenController.text,
-                    familySecret: secretController.text,
+                    accessToken: tokenController.text.trim(),
+                    familySecret: secretController.text.trim(),
                   );
                   try {
                     settings.validate();
@@ -375,7 +422,7 @@ class _SettingsPageState extends State<SettingsPage> {
             subtitle: Text(
               _remoteSettings.enabled
                   ? '${_remoteSettings.relayUrl}\n密钥保存在系统安全存储中'
-                  : '默认只使用局域网；配置 VPS 后可远程发送文字、链接和图片',
+                  : '默认只使用局域网；配置 VPS 后可远程发送文字、链接和 200 MiB 内文件',
             ),
             isThreeLine: _remoteSettings.enabled,
             trailing: const Icon(Icons.chevron_right),
@@ -388,7 +435,7 @@ class _SettingsPageState extends State<SettingsPage> {
               title: Text('传输时始终显示实际网络路线'),
               subtitle: Text(
                 '局域网会显示“局域网直连”或“二维码本地连接”；跨地区时显示“公网 VPS 中转”。'
-                '公网图片发送可随时点击停止，接收端会清理未完成文件。',
+                '公网文件发送可随时点击停止，接收端会清理未完成文件。',
               ),
             ),
           ),

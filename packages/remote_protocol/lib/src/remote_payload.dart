@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
-enum RemotePayloadKind { text, link, imageStart, imageChunk, imageEnd, cancel }
+enum RemotePayloadKind { text, link, fileStart, fileChunk, fileEnd, cancel }
 
 class RemotePayload {
   const RemotePayload._({
@@ -35,7 +35,7 @@ class RemotePayload {
     return RemotePayload._(kind: RemotePayloadKind.link, text: value);
   }
 
-  factory RemotePayload.imageStart({
+  factory RemotePayload.fileStart({
     required String transferId,
     required String fileName,
     required String mimeType,
@@ -44,14 +44,14 @@ class RemotePayload {
     if (!_validId(transferId) ||
         fileName.trim().isEmpty ||
         fileName.length > 180 ||
-        !mimeType.startsWith('image/') ||
+        mimeType.trim().isEmpty ||
         mimeType.length > 100 ||
         totalBytes < 1 ||
-        totalBytes > maxRemoteImageBytes) {
-      throw const FormatException('invalid remote image metadata');
+        totalBytes > maxRemoteFileBytes) {
+      throw const FormatException('invalid remote file metadata');
     }
     return RemotePayload._(
-      kind: RemotePayloadKind.imageStart,
+      kind: RemotePayloadKind.fileStart,
       transferId: transferId,
       fileName: fileName.trim(),
       mimeType: mimeType,
@@ -59,7 +59,7 @@ class RemotePayload {
     );
   }
 
-  factory RemotePayload.imageChunk({
+  factory RemotePayload.fileChunk({
     required String transferId,
     required int chunkIndex,
     required List<int> bytes,
@@ -67,23 +67,23 @@ class RemotePayload {
     if (!_validId(transferId) ||
         chunkIndex < 0 ||
         bytes.isEmpty ||
-        bytes.length > remoteImageChunkBytes) {
-      throw const FormatException('invalid remote image chunk');
+        bytes.length > remoteFileChunkBytes) {
+      throw const FormatException('invalid remote file chunk');
     }
     return RemotePayload._(
-      kind: RemotePayloadKind.imageChunk,
+      kind: RemotePayloadKind.fileChunk,
       transferId: transferId,
       chunkIndex: chunkIndex,
       bytes: Uint8List.fromList(bytes),
     );
   }
 
-  factory RemotePayload.imageEnd({required String transferId}) {
+  factory RemotePayload.fileEnd({required String transferId}) {
     if (!_validId(transferId)) {
       throw const FormatException('invalid remote transfer id');
     }
     return RemotePayload._(
-      kind: RemotePayloadKind.imageEnd,
+      kind: RemotePayloadKind.fileEnd,
       transferId: transferId,
     );
   }
@@ -98,8 +98,8 @@ class RemotePayload {
     );
   }
 
-  static const maxRemoteImageBytes = 20 * 1024 * 1024;
-  static const remoteImageChunkBytes = 256 * 1024;
+  static const maxRemoteFileBytes = 200 * 1024 * 1024;
+  static const remoteFileChunkBytes = 256 * 1024;
 
   final RemotePayloadKind kind;
   final String? text;
@@ -111,9 +111,9 @@ class RemotePayload {
   final Uint8List? bytes;
 
   bool get isTransferControl => switch (kind) {
-    RemotePayloadKind.imageStart ||
-    RemotePayloadKind.imageChunk ||
-    RemotePayloadKind.imageEnd ||
+    RemotePayloadKind.fileStart ||
+    RemotePayloadKind.fileChunk ||
+    RemotePayloadKind.fileEnd ||
     RemotePayloadKind.cancel => true,
     _ => false,
   };
@@ -140,18 +140,18 @@ class RemotePayload {
       return switch (kinds.first) {
         RemotePayloadKind.text => RemotePayload.text(value['text'] as String),
         RemotePayloadKind.link => RemotePayload.link(value['text'] as String),
-        RemotePayloadKind.imageStart => RemotePayload.imageStart(
+        RemotePayloadKind.fileStart => RemotePayload.fileStart(
           transferId: value['transferId'] as String,
           fileName: value['fileName'] as String,
           mimeType: value['mimeType'] as String,
           totalBytes: value['totalBytes'] as int,
         ),
-        RemotePayloadKind.imageChunk => RemotePayload.imageChunk(
+        RemotePayloadKind.fileChunk => RemotePayload.fileChunk(
           transferId: value['transferId'] as String,
           chunkIndex: value['chunkIndex'] as int,
           bytes: base64Decode(value['bytes'] as String),
         ),
-        RemotePayloadKind.imageEnd => RemotePayload.imageEnd(
+        RemotePayloadKind.fileEnd => RemotePayload.fileEnd(
           transferId: value['transferId'] as String,
         ),
         RemotePayloadKind.cancel => RemotePayload.cancel(
