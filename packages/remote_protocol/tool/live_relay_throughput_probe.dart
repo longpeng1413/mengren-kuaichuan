@@ -5,10 +5,13 @@ import 'dart:typed_data';
 import 'package:mengren_remote_protocol/remote_protocol.dart';
 
 Future<void> main(List<String> arguments) async {
-  final relayUri = Uri.parse(
-    Platform.environment['MQT_RELAY_URI'] ??
-        'wss://relay.meng1314.de5.net/v1/relay',
-  );
+  final relayUriText = Platform.environment['MQT_RELAY_URI'];
+  if (relayUriText == null || relayUriText.isEmpty) {
+    stderr.writeln('MQT_RELAY_URI is required.');
+    exitCode = 2;
+    return;
+  }
+  final relayUri = Uri.parse(relayUriText);
   final token = Platform.environment['MQT_RELAY_TOKEN'];
   if (token == null || token.isEmpty) {
     stderr.writeln('MQT_RELAY_TOKEN is required.');

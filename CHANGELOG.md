@@ -15,6 +15,7 @@
 ### 协议与部署
 
 - 公网加密格式和协议版本保持为 3，域名、访问令牌、家庭加密口令和 Caddy 配置不需要变更。
+- 公开版本新增自建 VPS 指南，公开示例统一使用 `relay.example.com`；探针必须由运行者显式提供自己的 `MQT_RELAY_URI` 和 `MQT_RELAY_TOKEN`，不会默认连接作者的服务器。
 - 真实 VPS 已更新为 `mengren-relay:1.7.2-ack120`，继续仅绑定 `127.0.0.1:18080`、复用权限为 `root:root 600` 的环境文件并保持 `unless-stopped`；原 Caddy 和个人网站未改动。
 - 部署先在 `127.0.0.1:18081` 完成候选容器健康检查，旧容器以 `mengren-relay-backup-20260828-145528` 停止保留；公开健康接口、双客户端发现、文字和文件生命周期均验证通过。
 - 应用 26 项、远程协议 5 项、中转服务 7 项测试通过；三处 analyze 无问题。
@@ -85,7 +86,7 @@
 - Windows 新增安全存储插件需要 Visual Studio ATL 组件；本机已补装并构建通过。
 - 真实 Debian 12 VPS 已部署 `mengren-relay:1.7.0-protocol3`；容器仅绑定 `127.0.0.1:18080`，健康检查、自动重启和不落盘在线模式验证通过。
 - 现有个人网站的 Caddy/Ghost 配置未改动，网站复查仍返回 HTTP 200。
-- `zlp1314.top` 不在当前 Cloudflare 登录账号的域名列表中，因此按用户授权改用第一个免费托管域名；`relay.meng1314.de5.net` 的仅 DNS A 记录、Caddy TLS、公开健康接口和带令牌 WSS 握手均已验证。
+- 私有验收域名的 DNS、Caddy TLS、公开健康接口和带令牌 WSS 握手均已验证；公开仓库不记录实际域名，使用者应部署自己的 VPS。
 - 未携带访问令牌的 WSS 请求返回 HTTP 401；VPS 环境文件权限为 `root:root 600`。
 - VPS 已部署 `mengren-relay:1.7.0-protocol3`；真实 WSS 双客户端完成发现、文字及 APK 文件生命周期的加密、转发、解密和接收端送达确认。
 - Windows Release 已验证单实例和 TCP 53318 监听；测试 ZIP 可正常读取 27 个条目。
