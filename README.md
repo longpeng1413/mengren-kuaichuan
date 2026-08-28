@@ -80,3 +80,11 @@
 ```
 
 生成 Windows 安装包前还需安装 Visual Studio 的“使用 C++ 的桌面开发”组件，并启用 Windows 开发人员模式。生成 Android APK 前还需安装 Android SDK、platform-tools 和对应构建工具。
+
+## 许可证与品牌
+
+项目源代码版权归 `longpeng1413` 及各贡献者所有。
+
+除品牌素材外，本项目源代码按照 [GNU General Public License v3.0 only](LICENSE) 发布。你可以学习、修改和分发源代码；如果向他人分发修改后的程序或安装包，必须同时按 GPL-3.0-only 提供对应源代码并保留许可证和版权声明。
+
+“猛人快传”名称、“猛”字图标及其应用图标不在 GPL 授权范围内。公开发布或向第三方分发衍生版本时，必须更换软件名称、图标和 Android 包名，且不得暗示得到本项目作者的官方认可。具体规则见 [品牌使用规则](BRAND_POLICY.md)。
