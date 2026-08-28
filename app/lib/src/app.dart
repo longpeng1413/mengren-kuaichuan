@@ -147,7 +147,7 @@ class _DeviceListPageState extends State<DeviceListPage> {
   final ReceivedFileService _receivedFileService = ReceivedFileService();
   final DiagnosticLogService _diagnostics = DiagnosticLogService.instance;
   final RemoteRelayClient _remoteRelay = RemoteRelayClient();
-  final RemoteCrypto _remoteCrypto = RemoteCrypto();
+  final RemoteCryptoWorker _remoteCrypto = RemoteCryptoWorker();
   StreamSubscription<List<DiscoveredDevice>>? _devicesSubscription;
   StreamSubscription<List<DiscoveredDevice>>? _pairedDevicesSubscription;
   StreamSubscription<void>? _incomingSubscription;
@@ -181,6 +181,10 @@ class _DeviceListPageState extends State<DeviceListPage> {
   String? _remoteError;
   RemoteRelayStatus _remoteStatus = RemoteRelayStatus.disconnected;
   final Map<String, _RemoteIncomingFile> _remoteIncomingFiles = {};
+  final Map<String, Timer> _remoteIncomingTimeouts = {};
+  final Map<String, TransferCancellationToken> _remoteOutgoingCancellations =
+      {};
+  final Set<String> _cancelledRemoteIncomingTransfers = {};
 
   @override
   void initState() {
@@ -274,6 +278,9 @@ class _DeviceListPageState extends State<DeviceListPage> {
         .listen((_) {});
     _remoteStatusSubscription = _remoteRelay.statuses.listen((status) {
       if (mounted) setState(() => _remoteStatus = status);
+      if (status == RemoteRelayStatus.disconnected) {
+        unawaited(_handleRemoteDisconnect());
+      }
     });
     _remoteErrorSubscription = _remoteRelay.errors.listen((error) {
       unawaited(_diagnostics.log('remote_relay_error code=${error.code}'));
@@ -428,12 +435,6 @@ class _DeviceListPageState extends State<DeviceListPage> {
   }
 
   Future<void> _handleRemoteEnvelope(EncryptedRemoteEnvelope envelope) async {
-    await _diagnostics.log(
-      'remote_envelope_received '
-      'message=${envelope.messageId.substring(0, 8)} '
-      'sender=${envelope.senderId.substring(0, 8)} '
-      'bytes=${envelope.cipherText.length}',
-    );
     late final RemotePayload payload;
     try {
       payload = await _remoteCrypto.decrypt(
@@ -452,6 +453,16 @@ class _DeviceListPageState extends State<DeviceListPage> {
       );
       _showRemoteReceiveError('收到一条无法解密的公网消息，请核对所有设备的家庭加密口令');
       return;
+    }
+    final shouldLogEnvelope = payload.kind != RemotePayloadKind.fileChunk;
+    if (shouldLogEnvelope) {
+      await _diagnostics.log(
+        'remote_envelope_received '
+        'message=${envelope.messageId.substring(0, 8)} '
+        'sender=${envelope.senderId.substring(0, 8)} '
+        'bytes=${envelope.cipherText.length} '
+        'kind=${payload.kind.name}',
+      );
     }
     final peerName = _remotePeerName(envelope.senderId);
     try {
@@ -478,7 +489,7 @@ class _DeviceListPageState extends State<DeviceListPage> {
         case RemotePayloadKind.fileEnd:
           await _completeRemoteFile(envelope.senderId, peerName, payload);
         case RemotePayloadKind.cancel:
-          await _cancelRemoteFile(payload.transferId!);
+          await _handleRemoteCancel(payload.transferId!);
       }
     } catch (error, stackTrace) {
       await _diagnostics.log(
@@ -493,12 +504,26 @@ class _DeviceListPageState extends State<DeviceListPage> {
       _showRemoteReceiveError('公网消息已经收到，但保存或处理失败，请导出诊断日志');
       return;
     }
-    await _diagnostics.log(
-      'remote_envelope_processed '
-      'message=${envelope.messageId.substring(0, 8)} '
-      'kind=${payload.kind.name}',
-    );
+    if (shouldLogEnvelope) {
+      await _diagnostics.log(
+        'remote_envelope_processed '
+        'message=${envelope.messageId.substring(0, 8)} '
+        'kind=${payload.kind.name}',
+      );
+    }
     await _acknowledgeRemoteEnvelope(envelope.messageId);
+  }
+
+  Future<void> _handleRemoteCancel(String transferId) async {
+    final outgoing = _remoteOutgoingCancellations[transferId];
+    if (outgoing != null) {
+      outgoing.cancel();
+      await _diagnostics.log(
+        'remote_file_cancelled_by_receiver transfer=${transferId.substring(0, 8)}',
+      );
+      return;
+    }
+    await _cancelRemoteFile(transferId);
   }
 
   Future<void> _acknowledgeRemoteEnvelope(
@@ -549,6 +574,7 @@ class _DeviceListPageState extends State<DeviceListPage> {
         totalBytes: payload.totalBytes!,
       );
       _remoteIncomingFiles[transferId] = incoming;
+      _refreshRemoteIncomingTimeout(transferId);
       _receiveProgress(
         TransferProgressUpdate(
           transferId: transferId,
@@ -575,6 +601,7 @@ class _DeviceListPageState extends State<DeviceListPage> {
     RemotePayload payload,
   ) async {
     final transferId = payload.transferId!;
+    if (_cancelledRemoteIncomingTransfers.contains(transferId)) return;
     final incoming = _remoteIncomingFiles[transferId];
     if (incoming == null ||
         incoming.senderId != senderId ||
@@ -587,17 +614,20 @@ class _DeviceListPageState extends State<DeviceListPage> {
       await _cancelRemoteFile(transferId);
       throw const TransferException('远程文件大小超过声明值');
     }
-    incoming.add(bytes);
-    _receiveProgress(
-      TransferProgressUpdate(
-        transferId: transferId,
-        peerId: senderId,
-        peerName: senderName,
-        fileName: incoming.fileName,
-        transferredBytes: incoming.receivedBytes,
-        totalBytes: incoming.totalBytes,
-      ),
-    );
+    await incoming.add(bytes);
+    _refreshRemoteIncomingTimeout(transferId);
+    if (incoming.shouldReportProgress) {
+      _receiveProgress(
+        TransferProgressUpdate(
+          transferId: transferId,
+          peerId: senderId,
+          peerName: senderName,
+          fileName: incoming.fileName,
+          transferredBytes: incoming.receivedBytes,
+          totalBytes: incoming.totalBytes,
+        ),
+      );
+    }
   }
 
   Future<void> _completeRemoteFile(
@@ -606,6 +636,8 @@ class _DeviceListPageState extends State<DeviceListPage> {
     RemotePayload payload,
   ) async {
     final transferId = payload.transferId!;
+    if (_cancelledRemoteIncomingTransfers.remove(transferId)) return;
+    _remoteIncomingTimeouts.remove(transferId)?.cancel();
     final incoming = _remoteIncomingFiles.remove(transferId);
     if (incoming == null ||
         incoming.senderId != senderId ||
@@ -638,6 +670,7 @@ class _DeviceListPageState extends State<DeviceListPage> {
   }
 
   Future<void> _cancelRemoteFile(String transferId) async {
+    _remoteIncomingTimeouts.remove(transferId)?.cancel();
     final incoming = _remoteIncomingFiles.remove(transferId);
     if (incoming == null) return;
     await incoming.abort();
@@ -652,6 +685,59 @@ class _DeviceListPageState extends State<DeviceListPage> {
         cancelled: true,
       ),
     );
+  }
+
+  void _refreshRemoteIncomingTimeout(String transferId) {
+    _remoteIncomingTimeouts.remove(transferId)?.cancel();
+    _remoteIncomingTimeouts[transferId] = Timer(
+      const Duration(seconds: 45),
+      () => unawaited(_expireRemoteFile(transferId)),
+    );
+  }
+
+  Future<void> _expireRemoteFile(String transferId) async {
+    if (!_remoteIncomingFiles.containsKey(transferId)) return;
+    await _diagnostics.log(
+      'remote_file_receive_timeout transfer=${transferId.substring(0, 8)}',
+    );
+    await _cancelRemoteFile(transferId);
+    _showRemoteReceiveError('公网文件超过 45 秒没有收到新数据，已停止接收并清理临时文件');
+  }
+
+  Future<void> _cancelIncomingRemoteTransfer(
+    String senderId,
+    String transferId,
+  ) async {
+    final incoming = _remoteIncomingFiles[transferId];
+    if (incoming == null || incoming.senderId != senderId) return;
+    _cancelledRemoteIncomingTransfers.add(transferId);
+    Timer(
+      const Duration(minutes: 5),
+      () => _cancelledRemoteIncomingTransfers.remove(transferId),
+    );
+    await _cancelRemoteFile(transferId);
+    try {
+      await _sendRemotePayload(
+        senderId,
+        RemotePayload.cancel(transferId: transferId),
+      ).timeout(const Duration(seconds: 5));
+    } on Object {
+      // Local cleanup is authoritative; the sender will also stop on timeout or
+      // delivery failure if the cancellation notice cannot be delivered.
+    }
+    await _diagnostics.log(
+      'remote_file_cancelled_by_receiver_ui '
+      'transfer=${transferId.substring(0, 8)}',
+    );
+  }
+
+  Future<void> _handleRemoteDisconnect() async {
+    for (final cancellation in _remoteOutgoingCancellations.values.toList()) {
+      cancellation.cancel();
+    }
+    for (final transferId in _remoteIncomingFiles.keys.toList()) {
+      await _cancelRemoteFile(transferId);
+    }
   }
 
   void _showCompletedTransfer(CompletedTransfer transfer) {
@@ -808,6 +894,15 @@ class _DeviceListPageState extends State<DeviceListPage> {
     _transferServer.dispose();
     _receivedFileService.setSharedFilesListener(null);
     unawaited(_remoteRelay.dispose());
+    unawaited(_remoteCrypto.dispose());
+    for (final cancellation in _remoteOutgoingCancellations.values) {
+      cancellation.cancel();
+    }
+    _remoteOutgoingCancellations.clear();
+    for (final timer in _remoteIncomingTimeouts.values) {
+      timer.cancel();
+    }
+    _remoteIncomingTimeouts.clear();
     for (final incoming in _remoteIncomingFiles.values) {
       unawaited(incoming.abort());
     }
@@ -1113,6 +1208,18 @@ class _DeviceListPageState extends State<DeviceListPage> {
     String recipientId,
     RemotePayload payload,
   ) async {
+    final queued = await _queueRemotePayload(recipientId, payload);
+    final outcome = await _RemoteDeliveryOutcome.capture(queued.delivery);
+    outcome.throwIfFailed();
+    return queued.messageId;
+  }
+
+  Future<_RemoteQueuedPayload> _queueRemotePayload(
+    String recipientId,
+    RemotePayload payload, {
+    TransferCancellationToken? cancellation,
+  }) async {
+    cancellation?.throwIfCancelled();
     if (_remoteRelay.status != RemoteRelayStatus.connected) {
       throw const TransferException('公网 VPS 尚未连接，请稍后重试');
     }
@@ -1122,18 +1229,30 @@ class _DeviceListPageState extends State<DeviceListPage> {
       senderId: widget.identity.deviceId,
       recipientId: recipientId,
     );
+    cancellation?.throwIfCancelled();
+    return _RemoteQueuedPayload(
+      messageId: envelope.messageId,
+      delivery: _deliverRemoteEnvelope(envelope, payload),
+    );
+  }
+
+  Future<void> _deliverRemoteEnvelope(
+    EncryptedRemoteEnvelope envelope,
+    RemotePayload payload,
+  ) async {
     try {
       await _remoteRelay.sendEnvelope(envelope);
     } on RemoteRelayException catch (error) {
       throw TransferException(_remoteDeliveryErrorText(error.code));
     }
-    await _diagnostics.log(
-      'remote_delivery_confirmed '
-      'message=${envelope.messageId.substring(0, 8)} '
-      'recipient=${recipientId.substring(0, 8)} '
-      'kind=${payload.kind.name}',
-    );
-    return envelope.messageId;
+    if (payload.kind != RemotePayloadKind.fileChunk) {
+      await _diagnostics.log(
+        'remote_delivery_confirmed '
+        'message=${envelope.messageId.substring(0, 8)} '
+        'recipient=${envelope.recipientId.substring(0, 8)} '
+        'kind=${payload.kind.name}',
+      );
+    }
   }
 
   Future<void> _sendRemoteFiles(
@@ -1154,6 +1273,7 @@ class _DeviceListPageState extends State<DeviceListPage> {
         throw const TransferException('公网中转单个文件最大支持 200 MiB，请改用局域网发送');
       }
       final transferId = randomRemoteId();
+      final activeCancellation = cancellation ?? TransferCancellationToken();
       var remoteStarted = false;
       var completed = false;
       Future<void>? cancelDelivery;
@@ -1164,13 +1284,18 @@ class _DeviceListPageState extends State<DeviceListPage> {
         ).then((_) {}).catchError((Object _) {});
       }
 
-      final removeCancellationListener = cancellation?.addListener(() {
+      _remoteOutgoingCancellations[transferId] = activeCancellation;
+      final removeCancellationListener = activeCancellation.addListener(() {
         if (remoteStarted) unawaited(notifyCancel());
       });
       RandomAccessFile? source;
       try {
         onProgress(selectedFile.name, 0, fileSize);
-        await _sendRemotePayload(
+        await _diagnostics.log(
+          'remote_file_send_start '
+          'transfer=${transferId.substring(0, 8)} bytes=$fileSize',
+        );
+        final start = await _queueRemotePayload(
           device.deviceId,
           RemotePayload.fileStart(
             transferId: transferId,
@@ -1178,39 +1303,87 @@ class _DeviceListPageState extends State<DeviceListPage> {
             mimeType: mimeType,
             totalBytes: fileSize,
           ),
+          cancellation: activeCancellation,
         );
         remoteStarted = true;
-        if (cancellation?.isCancelled ?? false) {
-          await notifyCancel();
-          throw const TransferCancelledException();
-        }
+        final startOutcome = await _waitForRemoteDelivery(
+          _RemoteDeliveryOutcome.capture(start.delivery),
+          activeCancellation,
+        );
+        startOutcome.throwIfFailed();
         source = await file.open();
-        var sentBytes = 0;
+        var queuedBytes = 0;
+        var confirmedBytes = 0;
         var chunkIndex = 0;
-        while (sentBytes < fileSize) {
-          cancellation?.throwIfCancelled();
+        var lastProgressAt = DateTime.now();
+        final pending = <_RemoteChunkDelivery>[];
+
+        Future<void> confirmOldestChunk() async {
+          final oldest = pending.removeAt(0);
+          final outcome = await _waitForRemoteDelivery(
+            oldest.outcome,
+            activeCancellation,
+          );
+          outcome.throwIfFailed();
+          confirmedBytes = oldest.endBytes;
+          final now = DateTime.now();
+          if (confirmedBytes == fileSize ||
+              now.difference(lastProgressAt) >=
+                  const Duration(milliseconds: 100)) {
+            lastProgressAt = now;
+            onProgress(selectedFile.name, confirmedBytes, fileSize);
+          }
+        }
+
+        while (queuedBytes < fileSize) {
+          activeCancellation.throwIfCancelled();
           final bytes = await source.read(RemotePayload.remoteFileChunkBytes);
           if (bytes.isEmpty) {
             throw const TransferException('读取文件时意外结束');
           }
-          await _sendRemotePayload(
+          final queued = await _queueRemotePayload(
             device.deviceId,
             RemotePayload.fileChunk(
               transferId: transferId,
               chunkIndex: chunkIndex,
               bytes: bytes,
             ),
+            cancellation: activeCancellation,
           );
-          sentBytes += bytes.length;
+          queuedBytes += bytes.length;
           chunkIndex += 1;
-          onProgress(selectedFile.name, sentBytes, fileSize);
+          pending.add(
+            _RemoteChunkDelivery(
+              endBytes: queuedBytes,
+              outcome: _RemoteDeliveryOutcome.capture(queued.delivery),
+            ),
+          );
+          if (pending.length >= _remoteDeliveryWindow) {
+            await confirmOldestChunk();
+          }
         }
-        cancellation?.throwIfCancelled();
-        await _sendRemotePayload(
+        while (pending.isNotEmpty) {
+          await confirmOldestChunk();
+        }
+        activeCancellation.throwIfCancelled();
+        final end = await _queueRemotePayload(
           device.deviceId,
           RemotePayload.fileEnd(transferId: transferId),
+          cancellation: activeCancellation,
         );
+        final endOutcome = await _waitForRemoteDelivery(
+          _RemoteDeliveryOutcome.capture(end.delivery),
+          activeCancellation,
+        );
+        endOutcome.throwIfFailed();
         completed = true;
+        onProgress(selectedFile.name, fileSize, fileSize);
+        unawaited(
+          _diagnostics.log(
+            'remote_file_send_complete '
+            'transfer=${transferId.substring(0, 8)} bytes=$fileSize',
+          ),
+        );
         final isSharedCache = _sharedCachePaths.contains(file.path);
         _appendChat(
           ChatMessage(
@@ -1232,11 +1405,48 @@ class _DeviceListPageState extends State<DeviceListPage> {
           await file.delete();
         }
       } finally {
-        removeCancellationListener?.call();
+        removeCancellationListener();
         await source?.close();
-        if (remoteStarted && !completed) await notifyCancel();
+        if (remoteStarted && !completed) {
+          await notifyCancel().timeout(
+            const Duration(seconds: 5),
+            onTimeout: () {},
+          );
+        }
+        if (identical(
+          _remoteOutgoingCancellations[transferId],
+          activeCancellation,
+        )) {
+          _remoteOutgoingCancellations.remove(transferId);
+        }
       }
     }
+  }
+
+  Future<_RemoteDeliveryOutcome> _waitForRemoteDelivery(
+    Future<_RemoteDeliveryOutcome> delivery,
+    TransferCancellationToken cancellation,
+  ) async {
+    if (cancellation.isCancelled) {
+      throw const TransferCancelledException();
+    }
+    final cancelled = Completer<_RemoteDeliveryOutcome>();
+    final removeCancellationListener = cancellation.addListener(() {
+      if (!cancelled.isCompleted) {
+        cancelled.complete(const _RemoteDeliveryOutcome.cancelled());
+      }
+    });
+    final _RemoteDeliveryOutcome outcome;
+    try {
+      outcome = await Future.any<_RemoteDeliveryOutcome>([
+        delivery,
+        cancelled.future,
+      ]);
+    } finally {
+      removeCancellationListener();
+    }
+    if (outcome.cancelled) throw const TransferCancelledException();
+    return outcome;
   }
 
   DiscoveredDevice? _directDeviceFor(String deviceId) {
@@ -1268,6 +1478,10 @@ class _DeviceListPageState extends State<DeviceListPage> {
           onClearConversation: (deleteCache) =>
               _clearConversation(device.deviceId, deleteCache: deleteCache),
           onRemoveDevice: () => _removeDevice(device),
+          onCancelIncomingTransfer: device.isRemote
+              ? (transferId) =>
+                    _cancelIncomingRemoteTransfer(device.deviceId, transferId)
+              : null,
         ),
       ),
     );
@@ -1530,6 +1744,51 @@ String _formatBytes(int bytes) {
   return '${(mebibytes / 1024).toStringAsFixed(2)} GiB';
 }
 
+const _remoteDeliveryWindow = 4;
+
+class _RemoteQueuedPayload {
+  const _RemoteQueuedPayload({required this.messageId, required this.delivery});
+
+  final String messageId;
+  final Future<void> delivery;
+}
+
+class _RemoteChunkDelivery {
+  const _RemoteChunkDelivery({required this.endBytes, required this.outcome});
+
+  final int endBytes;
+  final Future<_RemoteDeliveryOutcome> outcome;
+}
+
+class _RemoteDeliveryOutcome {
+  const _RemoteDeliveryOutcome._({
+    this.error,
+    this.stackTrace,
+    this.cancelled = false,
+  });
+
+  const _RemoteDeliveryOutcome.cancelled() : this._(cancelled: true);
+
+  final Object? error;
+  final StackTrace? stackTrace;
+  final bool cancelled;
+
+  static Future<_RemoteDeliveryOutcome> capture(Future<void> delivery) async {
+    try {
+      await delivery;
+      return const _RemoteDeliveryOutcome._();
+    } catch (error, stackTrace) {
+      return _RemoteDeliveryOutcome._(error: error, stackTrace: stackTrace);
+    }
+  }
+
+  void throwIfFailed() {
+    final failure = error;
+    if (failure == null) return;
+    Error.throwWithStackTrace(failure, stackTrace ?? StackTrace.current);
+  }
+}
+
 String _remoteFileMimeType(String fileName) {
   return switch (path.extension(fileName).toLowerCase()) {
     '.jpg' || '.jpeg' => 'image/jpeg',
@@ -1589,6 +1848,8 @@ class _RemoteIncomingFile {
   final IOSink sink;
   int receivedBytes = 0;
   int nextChunkIndex = 0;
+  int _bytesSinceFlush = 0;
+  DateTime _lastProgressAt = DateTime.now();
   bool _closed = false;
 
   static Future<_RemoteIncomingFile> create({
@@ -1619,11 +1880,26 @@ class _RemoteIncomingFile {
     );
   }
 
-  void add(List<int> bytes) {
+  Future<void> add(List<int> bytes) async {
     if (_closed) throw StateError('remote file is already closed');
     sink.add(bytes);
     receivedBytes += bytes.length;
     nextChunkIndex += 1;
+    _bytesSinceFlush += bytes.length;
+    if (_bytesSinceFlush >= 8 * 1024 * 1024) {
+      await sink.flush();
+      _bytesSinceFlush = 0;
+    }
+  }
+
+  bool get shouldReportProgress {
+    final now = DateTime.now();
+    if (receivedBytes == totalBytes ||
+        now.difference(_lastProgressAt) >= const Duration(milliseconds: 100)) {
+      _lastProgressAt = now;
+      return true;
+    }
+    return false;
   }
 
   Future<File> complete() async {

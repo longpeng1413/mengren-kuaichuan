@@ -16,6 +16,7 @@ import 'chat_message.dart';
 typedef SendChatText = Future<void> Function(String text);
 typedef ClearConversation = Future<void> Function(bool deleteCache);
 typedef RemoveDevice = Future<void> Function();
+typedef CancelIncomingTransfer = Future<void> Function(String transferId);
 typedef PickAndSendFiles = Future<void> Function(
   Iterable<String>? filePaths,
   void Function(String fileName, int sentBytes, int totalBytes) onProgress,
@@ -31,6 +32,7 @@ class ChatPage extends StatefulWidget {
     required this.onSendFiles,
     required this.onClearConversation,
     required this.onRemoveDevice,
+    this.onCancelIncomingTransfer,
     this.initialFilePaths = const [],
     super.key,
   });
@@ -42,6 +44,7 @@ class ChatPage extends StatefulWidget {
   final PickAndSendFiles onSendFiles;
   final ClearConversation onClearConversation;
   final RemoveDevice onRemoveDevice;
+  final CancelIncomingTransfer? onCancelIncomingTransfer;
   final List<String> initialFilePaths;
 
   @override
@@ -63,12 +66,18 @@ class _ChatPageState extends State<ChatPage> {
   bool _dragging = false;
   TransferCancellationToken? _activeCancellation;
   bool _cancelling = false;
+  bool _incomingCancelling = false;
 
   @override
   void initState() {
     super.initState();
     widget.messages.addListener(_messagesChanged);
     widget.incomingProgress.addListener(_incomingProgressChanged);
+    final initialIncoming = widget.incomingProgress.value;
+    if (initialIncoming != null) {
+      _incomingTransferId = initialIncoming.transferId;
+      _incomingStartedAt = DateTime.now();
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
     if (widget.initialFilePaths.isNotEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -96,6 +105,7 @@ class _ChatPageState extends State<ChatPage> {
       _incomingTransferId = null;
       _incomingStartedAt = null;
       _incomingBytesPerSecond = 0;
+      _incomingCancelling = false;
     } else {
       final now = DateTime.now();
       if (_incomingTransferId != progress.transferId ||
@@ -103,6 +113,7 @@ class _ChatPageState extends State<ChatPage> {
         _incomingTransferId = progress.transferId;
         _incomingStartedAt = now;
         _incomingBytesPerSecond = 0;
+        _incomingCancelling = false;
       } else {
         final elapsed = now.difference(_incomingStartedAt!).inMilliseconds;
         if (elapsed > 0) {
@@ -198,6 +209,19 @@ class _ChatPageState extends State<ChatPage> {
     if (cancellation == null || cancellation.isCancelled) return;
     setState(() => _cancelling = true);
     cancellation.cancel();
+  }
+
+  Future<void> _cancelIncomingTransfer() async {
+    final transferId = _incomingTransferId;
+    final cancel = widget.onCancelIncomingTransfer;
+    if (transferId == null || cancel == null || _incomingCancelling) return;
+    setState(() => _incomingCancelling = true);
+    try {
+      await cancel(transferId);
+    } catch (error) {
+      _showError(error);
+      if (mounted) setState(() => _incomingCancelling = false);
+    }
   }
 
   Future<void> _sendDroppedFiles(DropDoneDetails details) async {
@@ -390,6 +414,10 @@ class _ChatPageState extends State<ChatPage> {
                         transferredBytes: incoming.transferredBytes,
                         totalBytes: incoming.totalBytes,
                         bytesPerSecond: _incomingBytesPerSecond,
+                        onCancel: widget.onCancelIncomingTransfer == null
+                            ? null
+                            : () => unawaited(_cancelIncomingTransfer()),
+                        isCancelling: _incomingCancelling,
                       );
                     },
                   ),
@@ -576,7 +604,11 @@ class _TransferProgress extends StatelessWidget {
                   const SizedBox(width: 4),
                   IconButton(
                     visualDensity: VisualDensity.compact,
-                    tooltip: isCancelling ? '正在停止' : '停止发送',
+                    tooltip: isCancelling
+                        ? '正在停止'
+                        : direction == _TransferDirection.sending
+                        ? '停止发送'
+                        : '停止接收',
                     onPressed: isCancelling ? null : onCancel,
                     icon: isCancelling
                         ? const SizedBox.square(

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:cryptography/cryptography.dart';
 import 'package:mengren_remote_protocol/remote_protocol.dart';
 import 'package:test/test.dart';
@@ -99,4 +101,36 @@ void main() {
       );
     },
   );
+
+  test('background crypto worker preserves file chunks', () async {
+    final worker = RemoteCryptoWorker();
+    addTearDown(worker.dispose);
+    var eventLoopTicks = 0;
+    final heartbeat = Timer.periodic(
+      const Duration(milliseconds: 5),
+      (_) => eventLoopTicks += 1,
+    );
+    addTearDown(heartbeat.cancel);
+    final payload = RemotePayload.fileChunk(
+      transferId: 'abcdef0123456789abcdef0123456789',
+      chunkIndex: 7,
+      bytes: List<int>.generate(256 * 1024, (index) => index % 251),
+    );
+
+    final envelope = await worker.encrypt(
+      payload: payload,
+      familySecret: 'worker-family-secret',
+      senderId: 'sender-0123456789',
+      recipientId: 'recipient-0123456',
+    );
+    final decoded = await worker.decrypt(
+      envelope: envelope,
+      familySecret: 'worker-family-secret',
+    );
+
+    expect(decoded.kind, RemotePayloadKind.fileChunk);
+    expect(decoded.chunkIndex, 7);
+    expect(decoded.bytes, payload.bytes);
+    expect(eventLoopTicks, greaterThan(0));
+  }, timeout: const Timeout(Duration(seconds: 30)));
 }

@@ -209,7 +209,7 @@ void main() {
     }
   });
 
-  test('remote clients relay an arbitrary file lifecycle', () async {
+  test('remote clients pipeline an ordered arbitrary file lifecycle', () async {
     const token = 'test-token-with-at-least-24-characters';
     const secret = 'test-family-secret';
     final server = RelayServer(accessToken: token);
@@ -249,24 +249,27 @@ void main() {
         RemotePayload.fileEnd(transferId: transferId),
       ];
       final receivedKinds = <RemotePayloadKind>[];
+      final incoming = bob.envelopes.take(payloads.length).toList();
+      final deliveries = <Future<void>>[];
       for (final payload in payloads) {
-        final incoming = bob.envelopes.first;
         final envelope = await crypto.encrypt(
           payload: payload,
           familySecret: secret,
           senderId: 'alice-device-012345',
           recipientId: 'bob-device-01234567',
         );
-        final delivery = alice.sendEnvelope(envelope);
-        final received = await incoming;
+        deliveries.add(alice.sendEnvelope(envelope));
+      }
+      final receivedEnvelopes = await incoming;
+      for (final received in receivedEnvelopes) {
         final decoded = await crypto.decrypt(
           envelope: received,
           familySecret: secret,
         );
         receivedKinds.add(decoded.kind);
         await bob.acknowledgeEnvelope(received.messageId);
-        await delivery;
       }
+      await Future.wait(deliveries);
       expect(receivedKinds, [
         RemotePayloadKind.fileStart,
         RemotePayloadKind.fileChunk,
