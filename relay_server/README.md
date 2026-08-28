@@ -21,11 +21,16 @@ dart run bin/mengren_relay.dart
 Dockerfile 的构建上下文必须是项目根目录：
 
 ```bash
-docker build -f relay_server/Dockerfile -t mengren-relay:1.7.0 .
+docker build -f relay_server/Dockerfile -t mengren-relay:1.7.2-ack120 .
 docker run -d --name mengren-relay --restart unless-stopped \
   -e MQT_RELAY_TOKEN='至少24位的高强度随机令牌' \
-  -p 127.0.0.1:8080:8080 mengren-relay:1.7.0
+  -e MQT_RELAY_DELIVERY_TIMEOUT_SECONDS=120 \
+  -p 127.0.0.1:8080:8080 mengren-relay:1.7.2-ack120
 ```
+
+公网文件采用有限流水发送。服务端回执记录默认保留 120 秒，可通过
+`MQT_RELAY_DELIVERY_TIMEOUT_SECONDS` 设置为 30–600 秒；迟到或重复回执只记录日志，
+不再向接收端返回会误导用户的 `unknown_receipt` 错误。
 
 不要把令牌写入仓库、镜像或公开截图。VPS 防火墙只需开放 Caddy 使用的 80/443；8080 保持仅本机访问。
 

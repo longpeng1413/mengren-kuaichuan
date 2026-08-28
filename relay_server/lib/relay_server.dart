@@ -7,9 +7,14 @@ import 'package:mengren_remote_protocol/remote_protocol.dart';
 class RelayServer {
   RelayServer({
     required this.accessToken,
-    this.deliveryTimeout = const Duration(seconds: 30),
+    this.deliveryTimeout = defaultDeliveryTimeout,
     this.onLog,
   });
+
+  // This must be longer than the client acknowledgement timeout. The timer
+  // starts when a WebSocket frame is queued, not when the receiving app has
+  // finished downloading it from the socket.
+  static const defaultDeliveryTimeout = Duration(seconds: 120);
 
   static const protocolVersion = EncryptedRemoteEnvelope.protocolVersion;
   static const maximumWireMessageBytes = 768 * 1024;
@@ -241,7 +246,18 @@ class RelayServer {
       return;
     }
     final pending = _pendingRelays[messageId];
-    if (pending == null || pending.recipientId != recipient.deviceId) {
+    if (pending == null) {
+      // A receipt can arrive after a congested connection has exceeded the
+      // delivery timer, or be repeated while a client reconnects. It no longer
+      // changes sender state, so logging it is sufficient; reporting an error
+      // to the receiver only creates a misleading user-visible banner.
+      _log(
+        'late_receipt message=${_shortId(messageId)} '
+        'from=${_shortId(recipient.deviceId)}',
+      );
+      return;
+    }
+    if (pending.recipientId != recipient.deviceId) {
       _sendError(recipient.socket, 'unknown_receipt');
       return;
     }

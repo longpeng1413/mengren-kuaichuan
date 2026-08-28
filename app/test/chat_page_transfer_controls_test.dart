@@ -2,12 +2,17 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:lan_transfer/src/app.dart' show remoteFileDeliveryWindow;
 import 'package:lan_transfer/src/chat/chat_message.dart';
 import 'package:lan_transfer/src/chat/chat_page.dart';
 import 'package:lan_transfer/src/discovery/discovered_device.dart';
 import 'package:lan_transfer/src/transfer/transfer_models.dart';
 
 void main() {
+  test('remote file pipeline covers long-haul acknowledgement latency', () {
+    expect(remoteFileDeliveryWindow, greaterThanOrEqualTo(16));
+  });
+
   testWidgets('remote receiver can stop an incoming file', (tester) async {
     final messages = ValueNotifier<List<ChatMessage>>(const []);
     final incoming = ValueNotifier<TransferProgressUpdate?>(

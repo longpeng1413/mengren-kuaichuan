@@ -283,6 +283,10 @@ class _DeviceListPageState extends State<DeviceListPage> {
       }
     });
     _remoteErrorSubscription = _remoteRelay.errors.listen((error) {
+      if (error.code == 'unknown_receipt') {
+        unawaited(_diagnostics.log('remote_late_receipt_ignored'));
+        return;
+      }
       unawaited(_diagnostics.log('remote_relay_error code=${error.code}'));
       if (mounted) setState(() => _remoteError = _remoteErrorText(error.code));
     });
@@ -1358,7 +1362,7 @@ class _DeviceListPageState extends State<DeviceListPage> {
               outcome: _RemoteDeliveryOutcome.capture(queued.delivery),
             ),
           );
-          if (pending.length >= _remoteDeliveryWindow) {
+          if (pending.length >= remoteFileDeliveryWindow) {
             await confirmOldestChunk();
           }
         }
@@ -1744,7 +1748,10 @@ String _formatBytes(int bytes) {
   return '${(mebibytes / 1024).toStringAsFixed(2)} GiB';
 }
 
-const _remoteDeliveryWindow = 4;
+// Sixteen 256 KiB chunks keep 4 MiB of source data in flight. This is large
+// enough to cover common cross-region latency and packet-loss recovery without
+// allowing a 200 MiB transfer to accumulate unbounded WebSocket buffers.
+const remoteFileDeliveryWindow = 16;
 
 class _RemoteQueuedPayload {
   const _RemoteQueuedPayload({required this.messageId, required this.delivery});

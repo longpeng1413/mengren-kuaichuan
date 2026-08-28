@@ -49,7 +49,12 @@ class RemoteRelayException implements Exception {
 }
 
 class RemoteRelayClient {
-  RemoteRelayClient({this.ackTimeout = const Duration(seconds: 25)});
+  RemoteRelayClient({this.ackTimeout = defaultAckTimeout});
+
+  // A file sender can keep multiple encrypted chunks in flight. On a slow or
+  // lossy long-haul connection the final chunk in that window may legitimately
+  // take tens of seconds to reach the receiving app and return its receipt.
+  static const defaultAckTimeout = Duration(seconds: 90);
 
   final Duration ackTimeout;
   final Map<String, RemotePeer> _peers = {};

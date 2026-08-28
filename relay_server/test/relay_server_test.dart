@@ -316,6 +316,66 @@ void main() {
       await server.close();
     }
   });
+
+  test(
+    'late or duplicate receipts do not surface as receiver errors',
+    () async {
+      const token = 'test-token-with-at-least-24-characters';
+      final server = RelayServer(
+        accessToken: token,
+        deliveryTimeout: const Duration(milliseconds: 60),
+      );
+      await server.start(port: 0);
+      final alice = RemoteRelayClient();
+      final bob = RemoteRelayClient();
+      final bobErrors = <RemoteRelayException>[];
+      final bobErrorSubscription = bob.errors.listen(bobErrors.add);
+      try {
+        final uri = Uri.parse('ws://127.0.0.1:${server.port}/v1/relay');
+        await alice.connect(
+          relayUri: uri,
+          accessToken: token,
+          deviceId: 'alice-device-012345',
+          displayName: '郑州手机',
+          platform: 'android',
+        );
+        await bob.connect(
+          relayUri: uri,
+          accessToken: token,
+          deviceId: 'bob-device-01234567',
+          displayName: '安徽手机',
+          platform: 'android',
+        );
+        final incoming = bob.envelopes.first;
+        final envelope = await RemoteCrypto(keyDerivation: _fastKdf()).encrypt(
+          payload: RemotePayload.text('迟到回执'),
+          familySecret: 'test-family-secret',
+          senderId: 'alice-device-012345',
+          recipientId: 'bob-device-01234567',
+        );
+        final delivery = alice.sendEnvelope(envelope);
+        final received = await incoming;
+        await expectLater(
+          delivery,
+          throwsA(
+            isA<RemoteRelayException>().having(
+              (error) => error.code,
+              'code',
+              'delivery_timeout',
+            ),
+          ),
+        );
+        await bob.acknowledgeEnvelope(received.messageId);
+        await Future<void>.delayed(const Duration(milliseconds: 80));
+        expect(bobErrors, isEmpty);
+      } finally {
+        await bobErrorSubscription.cancel();
+        await alice.dispose();
+        await bob.dispose();
+        await server.close();
+      }
+    },
+  );
 }
 
 Future<Map<String, dynamic>> _eventOfType(

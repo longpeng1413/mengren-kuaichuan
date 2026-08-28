@@ -5,6 +5,13 @@ import 'package:mengren_remote_protocol/remote_protocol.dart';
 import 'package:test/test.dart';
 
 void main() {
+  test('relay acknowledgements tolerate slow long-haul links', () async {
+    final client = RemoteRelayClient();
+    addTearDown(client.dispose);
+    expect(client.ackTimeout, RemoteRelayClient.defaultAckTimeout);
+    expect(client.ackTimeout, const Duration(seconds: 90));
+  });
+
   final crypto = RemoteCrypto(
     keyDerivation: Pbkdf2(
       macAlgorithm: Hmac.sha256(),

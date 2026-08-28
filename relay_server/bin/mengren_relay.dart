@@ -11,8 +11,22 @@ Future<void> main() async {
     return;
   }
   final port = int.tryParse(environment['MQT_RELAY_PORT'] ?? '') ?? 8080;
+  final deliveryTimeoutSeconds =
+      int.tryParse(environment['MQT_RELAY_DELIVERY_TIMEOUT_SECONDS'] ?? '') ??
+      RelayServer.defaultDeliveryTimeout.inSeconds;
+  if (deliveryTimeoutSeconds < 30 || deliveryTimeoutSeconds > 600) {
+    stderr.writeln(
+      'MQT_RELAY_DELIVERY_TIMEOUT_SECONDS must be between 30 and 600.',
+    );
+    exitCode = 64;
+    return;
+  }
   final address = InternetAddress(environment['MQT_RELAY_BIND'] ?? '127.0.0.1');
-  final server = RelayServer(accessToken: token, onLog: stdout.writeln);
+  final server = RelayServer(
+    accessToken: token,
+    deliveryTimeout: Duration(seconds: deliveryTimeoutSeconds),
+    onLog: stdout.writeln,
+  );
   await server.start(address: address, port: port);
   stdout.writeln(
     'Mengren relay listening on ${address.address}:${server.port}',
