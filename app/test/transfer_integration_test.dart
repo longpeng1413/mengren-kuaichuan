@@ -84,12 +84,12 @@ void main() {
         receiver: receiver,
         senderId: 'sender012345678901',
         senderName: '测试发送机',
-        text: 'https://xiachuan.net/zh/docs/intro',
+        text: 'https://example.com/docs/intro',
       );
       final message = await received;
       expect(message.messageId, messageId);
       expect(message.senderName, '测试发送机');
-      expect(message.text, 'https://xiachuan.net/zh/docs/intro');
+      expect(message.text, 'https://example.com/docs/intro');
     } finally {
       await server.dispose();
     }
