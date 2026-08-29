@@ -27,7 +27,7 @@ class DiscoveredDevice {
 
   String get routeLabel => switch (connectionMode) {
     DeviceConnectionMode.direct => '局域网直连',
-    DeviceConnectionMode.paired => '二维码本地连接',
+    DeviceConnectionMode.paired => '局域网安全连接',
     DeviceConnectionMode.remote => '公网 VPS 中转',
   };
 

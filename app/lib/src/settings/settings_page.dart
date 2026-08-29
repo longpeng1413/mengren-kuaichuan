@@ -6,6 +6,7 @@ import 'package:launch_at_startup/launch_at_startup.dart';
 
 import '../app_version.dart';
 import '../diagnostics/diagnostic_log_service.dart';
+import '../pairing/pairing_endpoint.dart';
 import '../remote/remote_access_settings.dart';
 import '../storage/received_file_service.dart';
 import 'app_settings.dart';
@@ -18,6 +19,9 @@ class SettingsPage extends StatefulWidget {
     required this.saveSettings,
     this.initialRemoteSettings = const RemoteAccessSettings(),
     this.saveRemoteSettings,
+    this.removedDevices = const [],
+    this.restoreRemovedDevice,
+    this.restoreAllRemovedDevices,
     super.key,
   });
 
@@ -26,6 +30,9 @@ class SettingsPage extends StatefulWidget {
   final RemoteAccessSettings initialRemoteSettings;
   final Future<void> Function(RemoteAccessSettings settings)?
   saveRemoteSettings;
+  final List<RemovedDeviceEntry> removedDevices;
+  final Future<void> Function(String deviceId)? restoreRemovedDevice;
+  final Future<void> Function()? restoreAllRemovedDevices;
 
   @override
   State<SettingsPage> createState() => _SettingsPageState();
@@ -36,6 +43,7 @@ class _SettingsPageState extends State<SettingsPage> {
   final DiagnosticLogService _diagnostics = DiagnosticLogService.instance;
   late AppSettings _settings;
   late RemoteAccessSettings _remoteSettings;
+  late List<RemovedDeviceEntry> _removedDevices;
   bool _working = false;
   DiagnosticLogInfo? _diagnosticInfo;
 
@@ -44,6 +52,7 @@ class _SettingsPageState extends State<SettingsPage> {
     super.initState();
     _settings = widget.initialSettings;
     _remoteSettings = widget.initialRemoteSettings;
+    _removedDevices = List.of(widget.removedDevices);
     if (Platform.isAndroid) _refreshDiagnosticInfo();
   }
 
@@ -147,6 +156,43 @@ class _SettingsPageState extends State<SettingsPage> {
       await _save(_settings.copyWith(clearAndroidDirectory: true));
     } else {
       await _save(_settings.copyWith(clearWindowsDirectory: true));
+    }
+  }
+
+  Future<void> _restoreDevice(RemovedDeviceEntry entry) async {
+    final restore = widget.restoreRemovedDevice;
+    if (_working || restore == null) return;
+    setState(() => _working = true);
+    try {
+      await restore(entry.deviceId);
+      if (!mounted) return;
+      setState(() {
+        _removedDevices.removeWhere((item) => item.deviceId == entry.deviceId);
+      });
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('已恢复：${entry.label}')));
+    } catch (error) {
+      _showError('恢复设备失败：$error');
+    } finally {
+      if (mounted) setState(() => _working = false);
+    }
+  }
+
+  Future<void> _restoreAllDevices() async {
+    final restore = widget.restoreAllRemovedDevices;
+    if (_working || restore == null || _removedDevices.isEmpty) return;
+    setState(() => _working = true);
+    try {
+      final count = _removedDevices.length;
+      await restore();
+      if (!mounted) return;
+      setState(() => _removedDevices.clear());
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('已恢复 $count 台设备')));
+    } catch (error) {
+      _showError('恢复设备失败：$error');
+    } finally {
+      if (mounted) setState(() => _working = false);
     }
   }
 
@@ -386,6 +432,59 @@ class _SettingsPageState extends State<SettingsPage> {
               ),
             ),
           ),
+          const Divider(height: 32),
+          Text('设备管理', style: Theme.of(context).textTheme.titleMedium),
+          ListTile(
+            key: const Key('removed_devices_summary'),
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.devices_other_outlined),
+            title: const Text('已移除设备'),
+            subtitle: Text(
+              _removedDevices.isEmpty
+                  ? '没有已移除设备；移除后可在这里恢复'
+                  : '共 ${_removedDevices.length} 台；恢复后会重新参与自动发现和连接',
+            ),
+          ),
+          if (_removedDevices.isNotEmpty) ...[
+            Card(
+              margin: EdgeInsets.zero,
+              child: Column(
+                children: [
+                  for (var index = 0; index < _removedDevices.length; index++)
+                    Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (index > 0) const Divider(height: 1),
+                        ListTile(
+                          key: Key(
+                            'removed_device_${_removedDevices[index].deviceId}',
+                          ),
+                          title: Text(_removedDevices[index].label),
+                          subtitle: Text(
+                            '设备标识：${_removedDevices[index].shortId.toUpperCase()}',
+                          ),
+                          trailing: TextButton(
+                            onPressed: _working
+                                ? null
+                                : () => _restoreDevice(_removedDevices[index]),
+                            child: const Text('恢复'),
+                          ),
+                        ),
+                      ],
+                    ),
+                ],
+              ),
+            ),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                key: const Key('restore_all_removed_devices'),
+                onPressed: _working ? null : _restoreAllDevices,
+                icon: const Icon(Icons.restore),
+                label: const Text('恢复全部设备'),
+              ),
+            ),
+          ],
           if (Platform.isAndroid) ...[
             const Divider(height: 32),
             Text('诊断', style: Theme.of(context).textTheme.titleMedium),
@@ -434,7 +533,8 @@ class _SettingsPageState extends State<SettingsPage> {
               leading: Icon(Icons.route_outlined),
               title: Text('传输时始终显示实际网络路线'),
               subtitle: Text(
-                '局域网会显示“局域网直连”或“二维码本地连接”；跨地区时显示“公网 VPS 中转”。'
+                '局域网会显示“局域网直连”或“局域网安全连接”；后者可由已保存的连接自动重连，'
+                '并不表示本次扫描了二维码。跨地区时显示“公网 VPS 中转”。'
                 '公网文件发送可随时点击停止，接收端会清理未完成文件。',
               ),
             ),

@@ -5,6 +5,20 @@ import 'package:lan_transfer/src/discovery/discovered_device.dart';
 import 'package:test/test.dart';
 
 void main() {
+  test('saved local session has a non-QR route label', () {
+    final paired = DiscoveredDevice(
+      deviceId: 'paired-phone-0123456789',
+      displayName: '测试手机',
+      platform: 'android',
+      address: InternetAddress('192.168.1.20'),
+      transferPort: 53318,
+      lastSeen: DateTime.now(),
+      connectionMode: DeviceConnectionMode.paired,
+    );
+
+    expect(paired.routeLabel, '局域网安全连接');
+  });
+
   test('direct discovery wins over paired connection', () {
     final now = DateTime.now();
     final direct = DiscoveredDevice(

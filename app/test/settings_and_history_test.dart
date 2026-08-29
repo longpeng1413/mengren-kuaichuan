@@ -147,6 +147,55 @@ void main() {
     final store = RemovedDeviceStore();
     await store.save({'phone-1', 'laptop-2'});
     expect(await store.load(), {'phone-1', 'laptop-2'});
+
+    await store.saveEntries(const [
+      RemovedDeviceEntry(deviceId: 'phone-1', displayName: '测试手机'),
+    ]);
+    final entry = (await store.loadEntries()).single;
+    expect(entry.deviceId, 'phone-1');
+    expect(entry.displayName, '测试手机');
+  });
+
+  testWidgets('settings lists and restores removed devices', (tester) async {
+    String? restoredDeviceId;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsPage(
+          initialSettings: const AppSettings(),
+          saveSettings: (_) async {},
+          removedDevices: const [
+            RemovedDeviceEntry(
+              deviceId: 'phone-removed-0123456789',
+              displayName: '已移除测试手机',
+            ),
+          ],
+          restoreRemovedDevice: (deviceId) async {
+            restoredDeviceId = deviceId;
+          },
+          restoreAllRemovedDevices: () async {},
+        ),
+      ),
+    );
+
+    final row = find.byKey(
+      const Key('removed_device_phone-removed-0123456789'),
+    );
+    await tester.scrollUntilVisible(
+      row,
+      220,
+      scrollable: find.byType(Scrollable),
+    );
+    expect(find.text('已移除测试手机'), findsOneWidget);
+    await tester.tap(find.descendant(of: row, matching: find.text('恢复')));
+    await tester.pumpAndSettle();
+
+    expect(restoredDeviceId, 'phone-removed-0123456789');
+    await tester.scrollUntilVisible(
+      find.byKey(const Key('removed_devices_summary')),
+      -220,
+      scrollable: find.byType(Scrollable),
+    );
+    expect(find.text('没有已移除设备；移除后可在这里恢复'), findsOneWidget);
   });
 
   testWidgets('settings explains hotspot connection and 5 GHz speed', (
@@ -161,6 +210,11 @@ void main() {
       ),
     );
 
+    await tester.scrollUntilVisible(
+      find.text('公网远程传输'),
+      220,
+      scrollable: find.byType(Scrollable),
+    );
     expect(find.text('公网远程传输'), findsOneWidget);
     await tester.scrollUntilVisible(
       find.text('传输时始终显示实际网络路线'),
@@ -168,6 +222,7 @@ void main() {
       scrollable: find.byType(Scrollable),
     );
     expect(find.text('传输时始终显示实际网络路线'), findsOneWidget);
+    expect(find.textContaining('并不表示本次扫描了二维码'), findsOneWidget);
     await tester.scrollUntilVisible(
       find.text('连接与高速传输'),
       260,

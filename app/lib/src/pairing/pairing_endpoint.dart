@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:math';
 
 import 'package:shared_preferences/shared_preferences.dart';
@@ -94,14 +95,98 @@ class PairingStore {
 
 class RemovedDeviceStore {
   static const _key = 'removed_device_ids';
+  static const _detailsKey = 'removed_devices_v2';
 
   Future<Set<String>> load() async {
-    final preferences = await SharedPreferences.getInstance();
-    return (preferences.getStringList(_key) ?? const []).toSet();
+    return (await loadEntries()).map((entry) => entry.deviceId).toSet();
   }
 
   Future<void> save(Set<String> deviceIds) async {
+    final existing = {
+      for (final entry in await loadEntries()) entry.deviceId: entry,
+    };
+    await saveEntries(
+      deviceIds.map(
+        (deviceId) =>
+            existing[deviceId] ??
+            RemovedDeviceEntry(deviceId: deviceId, displayName: ''),
+      ),
+    );
+  }
+
+  Future<List<RemovedDeviceEntry>> loadEntries() async {
     final preferences = await SharedPreferences.getInstance();
-    await preferences.setStringList(_key, deviceIds.toList()..sort());
+    final deviceIds = (preferences.getStringList(_key) ?? const <String>[])
+        .toSet();
+    final entries = <String, RemovedDeviceEntry>{};
+    for (final raw in preferences.getStringList(_detailsKey) ?? const []) {
+      try {
+        final decoded = jsonDecode(raw);
+        if (decoded is! Map<String, dynamic>) continue;
+        final entry = RemovedDeviceEntry.tryFromJson(decoded);
+        if (entry != null && deviceIds.contains(entry.deviceId)) {
+          entries[entry.deviceId] = entry;
+        }
+      } on FormatException {
+        // Keep legacy IDs available even if one optional display-name record
+        // is damaged.
+      }
+    }
+    for (final deviceId in deviceIds) {
+      entries.putIfAbsent(
+        deviceId,
+        () => RemovedDeviceEntry(deviceId: deviceId, displayName: ''),
+      );
+    }
+    final result = entries.values.toList()
+      ..sort((left, right) => left.label.compareTo(right.label));
+    return result;
+  }
+
+  Future<void> saveEntries(Iterable<RemovedDeviceEntry> values) async {
+    final preferences = await SharedPreferences.getInstance();
+    final entries =
+        <String, RemovedDeviceEntry>{
+            for (final entry in values) entry.deviceId: entry,
+          }.values.toList()
+          ..sort((left, right) => left.deviceId.compareTo(right.deviceId));
+    await preferences.setStringList(
+      _key,
+      entries.map((entry) => entry.deviceId).toList(),
+    );
+    await preferences.setStringList(
+      _detailsKey,
+      entries.map((entry) => jsonEncode(entry.toJson())).toList(),
+    );
+  }
+}
+
+class RemovedDeviceEntry {
+  const RemovedDeviceEntry({required this.deviceId, required this.displayName});
+
+  final String deviceId;
+  final String displayName;
+
+  String get label {
+    final trimmed = displayName.trim();
+    return trimmed.isEmpty ? '设备 ${shortId.toUpperCase()}' : trimmed;
+  }
+
+  String get shortId =>
+      deviceId.length <= 8 ? deviceId : deviceId.substring(0, 8);
+
+  Map<String, String> toJson() => {
+    'deviceId': deviceId,
+    'displayName': displayName.trim(),
+  };
+
+  static RemovedDeviceEntry? tryFromJson(Map<String, dynamic> value) {
+    final deviceId = value['deviceId'];
+    final displayName = value['displayName'];
+    if (deviceId is! String || deviceId.trim().length < 4) return null;
+    return RemovedDeviceEntry(
+      deviceId: deviceId.trim(),
+      displayName: displayName is String ? displayName.trim() : '',
+    );
   }
 }

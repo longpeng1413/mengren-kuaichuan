@@ -173,6 +173,7 @@ class _DeviceListPageState extends State<DeviceListPage> {
   final List<String> _pendingSharedFiles = [];
   final Set<String> _sharedCachePaths = {};
   final Set<String> _removedDeviceIds = {};
+  final Map<String, String> _removedDeviceNames = {};
   PairingEndpoint? _savedPairing;
   List<DiscoveredDevice> _localDevices = const [];
   List<DiscoveredDevice> _pairedDevices = const [];
@@ -308,12 +309,17 @@ class _DeviceListPageState extends State<DeviceListPage> {
   }
 
   Future<void> _loadRemovedDevices() async {
-    final removed = await _removedDeviceStore.load();
+    final removed = await _removedDeviceStore.loadEntries();
     if (!mounted) return;
     setState(() {
       _removedDeviceIds
         ..clear()
-        ..addAll(removed);
+        ..addAll(removed.map((entry) => entry.deviceId));
+      _removedDeviceNames
+        ..clear()
+        ..addEntries(
+          removed.map((entry) => MapEntry(entry.deviceId, entry.displayName)),
+        );
       _mergeDevices();
     });
   }
@@ -407,11 +413,44 @@ class _DeviceListPageState extends State<DeviceListPage> {
     required String reason,
   }) async {
     if (!_removedDeviceIds.remove(deviceId)) return;
-    await _removedDeviceStore.save(_removedDeviceIds);
+    _removedDeviceNames.remove(deviceId);
+    await _saveRemovedDevices();
     await _diagnostics.log(
       'removed_device_restored reason=$reason peer=${deviceId.substring(0, 8)}',
     );
     if (mounted) setState(_mergeDevices);
+  }
+
+  Future<void> _restoreAllRemovedDevices() async {
+    if (_removedDeviceIds.isEmpty) return;
+    final count = _removedDeviceIds.length;
+    _removedDeviceIds.clear();
+    _removedDeviceNames.clear();
+    await _saveRemovedDevices();
+    await _diagnostics.log('removed_devices_restored_all count=$count');
+    if (mounted) setState(_mergeDevices);
+  }
+
+  Future<void> _saveRemovedDevices() => _removedDeviceStore.saveEntries(
+    _removedDeviceIds.map(
+      (deviceId) => RemovedDeviceEntry(
+        deviceId: deviceId,
+        displayName: _removedDeviceNames[deviceId] ?? '',
+      ),
+    ),
+  );
+
+  List<RemovedDeviceEntry> _removedDeviceEntries() {
+    final entries = _removedDeviceIds
+        .map(
+          (deviceId) => RemovedDeviceEntry(
+            deviceId: deviceId,
+            displayName: _removedDeviceNames[deviceId] ?? '',
+          ),
+        )
+        .toList();
+    entries.sort((left, right) => left.label.compareTo(right.label));
+    return entries;
   }
 
   Future<void> _configureRemoteRelay() async {
@@ -1533,13 +1572,14 @@ class _DeviceListPageState extends State<DeviceListPage> {
 
   Future<void> _removeDevice(DiscoveredDevice device) async {
     await _clearConversation(device.deviceId, deleteCache: true);
-    if (device.isPaired) {
+    if (_pairingRelay.hasSession(device.deviceId)) {
       await _pairingRelay.disconnect(device.deviceId);
       await _pairingStore.clearEndpoint();
       _savedPairing = null;
     }
     _removedDeviceIds.add(device.deviceId);
-    await _removedDeviceStore.save(_removedDeviceIds);
+    _removedDeviceNames[device.deviceId] = device.displayName;
+    await _saveRemovedDevices();
     if (mounted) {
       setState(_mergeDevices);
     }
@@ -1575,6 +1615,10 @@ class _DeviceListPageState extends State<DeviceListPage> {
           saveSettings: widget.saveSettings,
           initialRemoteSettings: widget.remoteSettings,
           saveRemoteSettings: widget.saveRemoteSettings,
+          removedDevices: _removedDeviceEntries(),
+          restoreRemovedDevice: (deviceId) =>
+              _restoreRemovedDevice(deviceId, reason: 'settings'),
+          restoreAllRemovedDevices: _restoreAllRemovedDevices,
         ),
       ),
     );
