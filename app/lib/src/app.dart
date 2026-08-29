@@ -158,6 +158,7 @@ class _DeviceListPageState extends State<DeviceListPage> {
   StreamSubscription<IncomingTextMessage>? _pairedMessageSubscription;
   StreamSubscription<TransferProgressUpdate>? _progressSubscription;
   StreamSubscription<TransferProgressUpdate>? _pairedProgressSubscription;
+  StreamSubscription<String>? _restoreRequestSubscription;
   StreamSubscription<List<RemotePeer>>? _remotePeersSubscription;
   StreamSubscription<void>? _remoteEnvelopeSubscription;
   StreamSubscription<RemoteRelayStatus>? _remoteStatusSubscription;
@@ -253,6 +254,10 @@ class _DeviceListPageState extends State<DeviceListPage> {
     );
     _pairedProgressSubscription = _pairingRelay.incomingProgress.listen(
       _receiveProgress,
+    );
+    _restoreRequestSubscription = _pairingRelay.restoreRequests.listen(
+      (deviceId) =>
+          unawaited(_restoreRemovedDevice(deviceId, reason: 'manual_pairing')),
     );
     _remotePeersSubscription = _remoteRelay.peerUpdates.listen((peers) {
       if (!mounted) return;
@@ -395,6 +400,18 @@ class _DeviceListPageState extends State<DeviceListPage> {
       pairedDevices: _pairedDevices,
       remoteDevices: _remoteDevices,
     ).where((device) => !_removedDeviceIds.contains(device.deviceId)).toList();
+  }
+
+  Future<void> _restoreRemovedDevice(
+    String deviceId, {
+    required String reason,
+  }) async {
+    if (!_removedDeviceIds.remove(deviceId)) return;
+    await _removedDeviceStore.save(_removedDeviceIds);
+    await _diagnostics.log(
+      'removed_device_restored reason=$reason peer=${deviceId.substring(0, 8)}',
+    );
+    if (mounted) setState(_mergeDevices);
   }
 
   Future<void> _configureRemoteRelay() async {
@@ -831,7 +848,7 @@ class _DeviceListPageState extends State<DeviceListPage> {
   Future<void> _connectPairing(PairingEndpoint endpoint) async {
     late final DiscoveredDevice device;
     try {
-      device = await _pairingRelay.connect(endpoint);
+      device = await _pairingRelay.connect(endpoint, requestRestore: true);
       await _diagnostics.log(
         'pairing_connected peer=${device.deviceId.substring(0, 8)}',
       );
@@ -843,10 +860,7 @@ class _DeviceListPageState extends State<DeviceListPage> {
       );
       rethrow;
     }
-    if (_removedDeviceIds.remove(device.deviceId)) {
-      await _removedDeviceStore.save(_removedDeviceIds);
-      if (mounted) setState(_mergeDevices);
-    }
+    await _restoreRemovedDevice(device.deviceId, reason: 'manual_pairing');
     await _pairingStore.saveEndpoint(endpoint);
     _savedPairing = endpoint;
   }
@@ -888,6 +902,7 @@ class _DeviceListPageState extends State<DeviceListPage> {
     _pairedMessageSubscription?.cancel();
     _progressSubscription?.cancel();
     _pairedProgressSubscription?.cancel();
+    _restoreRequestSubscription?.cancel();
     _remotePeersSubscription?.cancel();
     _remoteEnvelopeSubscription?.cancel();
     _remoteStatusSubscription?.cancel();
@@ -971,6 +986,10 @@ class _DeviceListPageState extends State<DeviceListPage> {
 
     try {
       final destination = await _receiveDirectory();
+      await _restoreRemovedDevice(
+        request.senderId,
+        reason: 'accepted_incoming_transfer',
+      );
       unawaited(
         _diagnostics.log(
           'incoming_transfer_accepted bytes=${request.fileSize}',
@@ -1058,13 +1077,31 @@ class _DeviceListPageState extends State<DeviceListPage> {
       late final TransferResult result;
       final directDevice = _directDeviceFor(device.deviceId);
       final usePaired = _pairingRelay.hasSession(device.deviceId);
+      final preferDirect = directDevice != null;
       var sentBytes = 0;
       await _diagnostics.log(
-        'send_start bytes=$fileSize route=${usePaired ? 'paired' : 'direct'}',
+        'send_start bytes=$fileSize route=${preferDirect ? 'direct' : 'paired'}',
       );
       try {
-        if (usePaired) {
+        if (preferDirect) {
           try {
+            result = await _transferClient.sendFile(
+              receiver: directDevice,
+              senderId: widget.identity.deviceId,
+              senderName: widget.identity.displayName,
+              file: file,
+              onProgress: (sent, total) {
+                sentBytes = sent;
+                onProgress(selectedFile.name, sent, total);
+              },
+              cancellation: cancellation,
+            );
+          } on TransferException catch (error) {
+            if (sentBytes != 0 || !usePaired) rethrow;
+            await _diagnostics.log(
+              'direct_send_unavailable_fallback_to_paired',
+              error: error,
+            );
             result = await _pairingRelay.sendFile(
               receiverId: device.deviceId,
               file: file,
@@ -1074,40 +1111,23 @@ class _DeviceListPageState extends State<DeviceListPage> {
               },
               cancellation: cancellation,
             );
-          } on TransferException catch (error) {
-            if (sentBytes != 0 || directDevice == null) rethrow;
-            await _diagnostics.log(
-              'paired_send_unavailable_fallback_to_direct',
-              error: error,
-            );
-            result = await _transferClient.sendFile(
-              receiver: directDevice,
-              senderId: widget.identity.deviceId,
-              senderName: widget.identity.displayName,
-              file: file,
-              onProgress: (sent, total) =>
-                  onProgress(selectedFile.name, sent, total),
-              cancellation: cancellation,
-            );
           }
-        } else {
-          final receiver = directDevice ?? (device.isPaired ? null : device);
-          if (receiver == null) {
-            throw const TransferException('设备连接已经断开，请等待重新连接');
-          }
-          result = await _transferClient.sendFile(
-            receiver: receiver,
-            senderId: widget.identity.deviceId,
-            senderName: widget.identity.displayName,
+        } else if (usePaired) {
+          result = await _pairingRelay.sendFile(
+            receiverId: device.deviceId,
             file: file,
-            onProgress: (sent, total) =>
-                onProgress(selectedFile.name, sent, total),
+            onProgress: (sent, total) {
+              sentBytes = sent;
+              onProgress(selectedFile.name, sent, total);
+            },
             cancellation: cancellation,
           );
+        } else {
+          throw const TransferException('设备连接已经断开，请等待重新连接');
         }
       } catch (error, stackTrace) {
         await _diagnostics.log(
-          'send_failed route=${usePaired ? 'paired' : 'direct'}',
+          'send_failed route=${preferDirect ? 'direct' : 'paired'}',
           error: error,
           stackTrace: stackTrace,
         );
@@ -1166,32 +1186,28 @@ class _DeviceListPageState extends State<DeviceListPage> {
     }
     late String messageId;
     final directDevice = _directDeviceFor(device.deviceId);
-    if (_pairingRelay.hasSession(device.deviceId)) {
+    if (directDevice != null) {
       try {
-        messageId = await _pairingRelay.sendText(
-          receiverId: device.deviceId,
-          text: text,
-        );
-      } on TransferException {
-        if (directDevice == null) rethrow;
         messageId = await _transferClient.sendText(
           receiver: directDevice,
           senderId: widget.identity.deviceId,
           senderName: widget.identity.displayName,
           text: text,
         );
+      } on TransferException {
+        if (!_pairingRelay.hasSession(device.deviceId)) rethrow;
+        messageId = await _pairingRelay.sendText(
+          receiverId: device.deviceId,
+          text: text,
+        );
       }
-    } else {
-      final receiver = directDevice ?? (device.isPaired ? null : device);
-      if (receiver == null) {
-        throw const TransferException('设备连接已经断开，请等待重新连接');
-      }
-      messageId = await _transferClient.sendText(
-        receiver: receiver,
-        senderId: widget.identity.deviceId,
-        senderName: widget.identity.displayName,
+    } else if (_pairingRelay.hasSession(device.deviceId)) {
+      messageId = await _pairingRelay.sendText(
+        receiverId: device.deviceId,
         text: text,
       );
+    } else {
+      throw const TransferException('设备连接已经断开，请等待重新连接');
     }
     _appendChat(
       ChatMessage(

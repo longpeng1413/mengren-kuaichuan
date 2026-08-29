@@ -39,6 +39,8 @@ class PairingRelay {
       StreamController<IncomingTextMessage>.broadcast();
   final StreamController<TransferProgressUpdate> _progressController =
       StreamController<TransferProgressUpdate>.broadcast();
+  final StreamController<String> _restoreRequestsController =
+      StreamController<String>.broadcast();
 
   Stream<List<DiscoveredDevice>> get devices => _devicesController.stream;
   Stream<IncomingTransferRequest> get incoming => _incomingController.stream;
@@ -46,6 +48,7 @@ class PairingRelay {
   Stream<IncomingTextMessage> get messages => _messagesController.stream;
   Stream<TransferProgressUpdate> get incomingProgress =>
       _progressController.stream;
+  Stream<String> get restoreRequests => _restoreRequestsController.stream;
   bool get isConnecting => _connecting;
   bool hasSession(String deviceId) => _sessions.containsKey(deviceId);
 
@@ -95,14 +98,20 @@ class PairingRelay {
     return true;
   }
 
-  Future<DiscoveredDevice> connect(PairingEndpoint endpoint) async {
+  Future<DiscoveredDevice> connect(
+    PairingEndpoint endpoint, {
+    bool requestRestore = false,
+  }) async {
     if (_disposed) throw const TransferException('配对服务已经停止');
     if (_connecting) throw const TransferException('正在连接，请稍候');
 
     final existing = _sessions.values.where(
       (session) => session.remoteAddress.address == endpoint.host,
     );
-    if (existing.isNotEmpty) return _deviceFor(existing.first);
+    if (existing.isNotEmpty) {
+      if (requestRestore) existing.first.requestRemoteRestore();
+      return _deviceFor(existing.first);
+    }
 
     _connecting = true;
     try {
@@ -130,6 +139,7 @@ class PairingRelay {
       );
       await session.start();
       final registered = _register(session);
+      if (requestRestore) registered.requestRemoteRestore();
       return _deviceFor(registered);
     } on TimeoutException {
       throw const TransferException('连接配对设备超时');
@@ -187,6 +197,7 @@ class PairingRelay {
       onMessage: _messagesController.add,
       onProgress: _progressController.add,
       onIdentityChanged: _emitDevices,
+      onRestoreRequested: _restoreRequestsController.add,
     );
   }
 
@@ -249,6 +260,7 @@ class PairingRelay {
     await _completedController.close();
     await _messagesController.close();
     await _progressController.close();
+    await _restoreRequestsController.close();
   }
 }
 
@@ -263,6 +275,7 @@ class _RelaySession {
     required this.onMessage,
     required this.onProgress,
     required this.onIdentityChanged,
+    required this.onRestoreRequested,
   });
 
   final WebSocket socket;
@@ -274,6 +287,7 @@ class _RelaySession {
   final void Function(IncomingTextMessage) onMessage;
   final void Function(TransferProgressUpdate) onProgress;
   final void Function() onIdentityChanged;
+  final void Function(String deviceId) onRestoreRequested;
 
   final Completer<DeviceIdentity> _remoteIdentityCompleter = Completer();
   final Completer<void> _closedCompleter = Completer();
@@ -439,6 +453,8 @@ class _RelaySession {
         _handleIncomingMessage(message);
       case 'messageAck':
         _handleMessageAck(message);
+      case 'restoreDevice':
+        _handleRestoreDevice(message);
     }
   }
 
@@ -479,6 +495,17 @@ class _RelaySession {
     if (acknowledged != null && !acknowledged.isCompleted) {
       acknowledged.complete();
     }
+  }
+
+  void _handleRestoreDevice(Map<String, dynamic> message) {
+    final deviceId = message['deviceId'];
+    final identity = _remoteIdentity;
+    if (identity == null || deviceId != identity.deviceId) return;
+    onRestoreRequested(identity.deviceId);
+  }
+
+  void requestRemoteRestore() {
+    _sendJson({'type': 'restoreDevice', 'deviceId': _localIdentity.deviceId});
   }
 
   void _handleHello(Map<String, dynamic> message) {

@@ -65,6 +65,47 @@ void main() {
     }
   });
 
+  test(
+    'manual pairing asks the receiving peer to restore the device',
+    () async {
+      const computer = DeviceIdentity(
+        deviceId: 'computer-restore-0123456789',
+        displayName: '恢复测试电脑',
+        platform: 'windows',
+      );
+      const phone = DeviceIdentity(
+        deviceId: 'phone-restore-0123456789012',
+        displayName: '恢复测试手机',
+        platform: 'android',
+      );
+      final computerRelay = PairingRelay(
+        identity: computer,
+        pairingCode: '12345678',
+      );
+      final phoneRelay = PairingRelay(identity: phone, pairingCode: '87654321');
+      final computerServer = TransferServer(
+        port: 0,
+        pairingRelay: computerRelay,
+      );
+      try {
+        await computerServer.start();
+        final restoreRequest = computerRelay.restoreRequests.first;
+        await phoneRelay.connect(
+          PairingEndpoint(
+            host: InternetAddress.loopbackIPv4.address,
+            port: computerServer.actualPort!,
+            code: '12345678',
+          ),
+          requestRestore: true,
+        );
+        expect(await restoreRequest, phone.deviceId);
+      } finally {
+        await computerServer.dispose();
+        await phoneRelay.dispose();
+      }
+    },
+  );
+
   test('paired relay transfers files in both directions', () async {
     final temporaryRoot = await Directory.systemTemp.createTemp(
       'mengren-pairing-test-',

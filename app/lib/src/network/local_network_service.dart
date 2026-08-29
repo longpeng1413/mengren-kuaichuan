@@ -34,7 +34,7 @@ class LocalNetworkService {
   const LocalNetworkService();
 
   Future<List<LocalNetworkAddress>> listAddresses() async {
-    if (Platform.isAndroid) {
+    if (Platform.isAndroid || Platform.isWindows) {
       try {
         final native = await _platformChannel.invokeListMethod<dynamic>(
           'networkInterfaces',
@@ -43,7 +43,7 @@ class LocalNetworkService {
         if (parsed.isNotEmpty) return parsed;
       } on PlatformException {
         // Fall through to Dart enumeration. QR/manual pairing must remain
-        // available even when an OEM blocks native interface inspection.
+        // available even when an OEM or Windows API blocks inspection.
       } on MissingPluginException {
         // Tests and early engine startup may not have the channel registered.
       }
@@ -196,8 +196,8 @@ int guessedIpv4PrefixLength(String address) {
   final parts = address.split('.').map(int.tryParse).toList(growable: false);
   if (parts.length == 4 && parts[0] == 169 && parts[1] == 254) return 16;
   // Android hotspot and ordinary Wi-Fi networks overwhelmingly use /24.
-  // Native Android enumeration supplies the exact value; this is only the
-  // cross-platform fallback when a prefix is unavailable.
+  // Native Android and Windows enumeration supply the exact value; this is
+  // only the cross-platform fallback when a prefix is unavailable.
   return 24;
 }
 

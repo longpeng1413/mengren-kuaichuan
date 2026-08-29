@@ -15,6 +15,7 @@ void main() {
 
     test('calculates directed broadcasts from the actual prefix', () {
       expect(calculateIpv4Broadcast('192.168.43.1', 24), '192.168.43.255');
+      expect(calculateIpv4Broadcast('192.168.0.65', 23), '192.168.1.255');
       expect(calculateIpv4Broadcast('172.20.10.2', 28), '172.20.10.15');
       expect(calculateIpv4Broadcast('10.42.7.12', 16), '10.42.255.255');
       expect(calculateIpv4Broadcast('10.42.7.12', 32), isNull);

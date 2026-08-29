@@ -5,7 +5,7 @@ import 'package:lan_transfer/src/discovery/discovered_device.dart';
 import 'package:test/test.dart';
 
 void main() {
-  test('paired duplex connection wins over direct discovery', () {
+  test('direct discovery wins over paired connection', () {
     final now = DateTime.now();
     final direct = DiscoveredDevice(
       deviceId: 'phone012345678901',
@@ -31,7 +31,8 @@ void main() {
     );
 
     expect(merged, hasLength(1));
-    expect(merged.single.isPaired, isTrue);
+    expect(merged.single.connectionMode, DeviceConnectionMode.direct);
+    expect(merged.single.routeLabel, '局域网直连');
   });
 
   test('local routes win over VPS relay for the same device', () {
