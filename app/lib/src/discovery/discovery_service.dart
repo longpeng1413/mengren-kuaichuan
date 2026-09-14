@@ -25,8 +25,11 @@ class DiscoveryService {
   StreamSubscription<RawSocketEvent>? _socketSubscription;
   Timer? _announceTimer;
   Timer? _cleanupTimer;
+  Timer? _bindRetryTimer;
   bool _disposed = false;
+  bool _paused = false;
   bool _announcing = false;
+  bool _restartingSocket = false;
   String? _lastNetworkSignature;
 
   final Map<String, DiscoveredDevice> _devices = {};
@@ -37,7 +40,33 @@ class DiscoveryService {
 
   Future<void> start() async {
     if (_disposed) return;
+    _paused = false;
     await _bindSocket();
+    _startTimers();
+    unawaited(announce());
+  }
+
+  /// Releases Android UDP work while the app is in the background. Android
+  /// drops the multicast lock at that point, so continuing to broadcast can
+  /// otherwise cause an endless socket-restart loop.
+  Future<void> pause() async {
+    if (_disposed || _paused) return;
+    _paused = true;
+    _announceTimer?.cancel();
+    _announceTimer = null;
+    _cleanupTimer?.cancel();
+    _cleanupTimer = null;
+    _bindRetryTimer?.cancel();
+    _bindRetryTimer = null;
+    await _closeSocket();
+  }
+
+  Future<void> resume() => start();
+
+  bool get _isActive => !_disposed && !_paused;
+
+  void _startTimers() {
+    if (!_isActive) return;
     _announceTimer ??= Timer.periodic(
       _announceEvery,
       (_) => unawaited(announce()),
@@ -46,16 +75,15 @@ class DiscoveryService {
       const Duration(seconds: 1),
       (_) => _removeOfflineDevices(),
     );
-    unawaited(announce());
   }
 
   void updateIdentity(DeviceIdentity identity) {
     _identity = identity;
-    unawaited(announce());
+    if (_isActive) unawaited(announce());
   }
 
   Future<void> _bindSocket() async {
-    if (_socket != null || _disposed) return;
+    if (_socket != null || !_isActive) return;
 
     try {
       final socket = await RawDatagramSocket.bind(
@@ -63,6 +91,10 @@ class DiscoveryService {
         discoveryPort,
         reuseAddress: true,
       );
+      if (!_isActive) {
+        socket.close();
+        return;
+      }
       socket.broadcastEnabled = true;
       _socket = socket;
       _socketSubscription = socket.listen(
@@ -74,7 +106,7 @@ class DiscoveryService {
       _onLog?.call('discovery_socket_started port=$discoveryPort');
     } on SocketException catch (error) {
       _onLog?.call('discovery_socket_bind_failed error=${error.message}');
-      Timer(const Duration(seconds: 2), _bindSocket);
+      _scheduleBindRetry(const Duration(seconds: 2));
     }
   }
 
@@ -109,7 +141,7 @@ class DiscoveryService {
   }
 
   Future<void> announce() async {
-    if (_announcing || _disposed) return;
+    if (_announcing || !_isActive) return;
     final socket = _socket;
     if (socket == null) {
       unawaited(_bindSocket());
@@ -119,6 +151,7 @@ class DiscoveryService {
     _announcing = true;
     try {
       final addresses = await _networkService.listAddresses();
+      if (!_isActive || !identical(socket, _socket)) return;
       final targets = discoveryBroadcastTargets(addresses);
       final signature = addresses
           .map(
@@ -154,11 +187,14 @@ class DiscoveryService {
         }
       }
       if (!sentAny) {
-        throw const SocketException('all discovery broadcast targets failed');
+        // A broadcast can be rejected while a phone switches networks or is
+        // backgrounded. That does not mean the bound UDP socket is broken;
+        // repeatedly tearing it down here previously created one restart per
+        // second and could leave Android unresponsive when it returned.
+        _onLog?.call('discovery_announce_skipped reason=no_broadcast_target');
       }
     } on SocketException catch (error) {
       _onLog?.call('discovery_announce_failed error=${error.message}');
-      unawaited(_restartSocket());
     } catch (error) {
       _onLog?.call('discovery_network_scan_failed error=$error');
     } finally {
@@ -167,6 +203,7 @@ class DiscoveryService {
   }
 
   void _removeOfflineDevices() {
+    if (!_isActive) return;
     final cutoff = DateTime.now().subtract(_offlineAfter);
     final before = _devices.length;
     _devices.removeWhere((_, device) => device.lastSeen.isBefore(cutoff));
@@ -184,21 +221,39 @@ class DiscoveryService {
   }
 
   Future<void> _restartSocket() async {
-    await _socketSubscription?.cancel();
-    _socketSubscription = null;
-    _socket?.close();
-    _socket = null;
-    if (!_disposed) {
-      Timer(const Duration(seconds: 1), _bindSocket);
+    if (!_isActive || _restartingSocket) return;
+    _restartingSocket = true;
+    try {
+      await _closeSocket();
+      _scheduleBindRetry(const Duration(seconds: 2));
+    } finally {
+      _restartingSocket = false;
     }
+  }
+
+  Future<void> _closeSocket() async {
+    final subscription = _socketSubscription;
+    _socketSubscription = null;
+    final socket = _socket;
+    _socket = null;
+    await subscription?.cancel();
+    socket?.close();
+  }
+
+  void _scheduleBindRetry(Duration delay) {
+    if (!_isActive || _bindRetryTimer?.isActive == true) return;
+    _bindRetryTimer = Timer(delay, () {
+      _bindRetryTimer = null;
+      unawaited(_bindSocket());
+    });
   }
 
   Future<void> dispose() async {
     _disposed = true;
     _announceTimer?.cancel();
     _cleanupTimer?.cancel();
-    await _socketSubscription?.cancel();
-    _socket?.close();
+    _bindRetryTimer?.cancel();
+    await _closeSocket();
     await _devicesController.close();
   }
 }

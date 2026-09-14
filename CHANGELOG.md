@@ -2,6 +2,23 @@
 
 本项目采用“功能完成并经过构建验证后提升版本”的方式记录。早期原型没有逐次保留完整版本说明，因此不虚构缺失的具体小版本号。
 
+## v1.7.5+19 — 2026-09-14
+
+### 修复与优化
+
+- 修复 Android 应用进入后台较长时间后，回到前台点击可能无响应、必须强制结束后重开的风险。
+- Android 进入后台时暂停 UDP 自动发现、UDP socket 重试、已保存配对的自动重连和 VPS 断线重连；回到前台后再有序恢复。已建立的传输连接不会被该生命周期处理主动断开。
+- UDP 广播暂时不可用时不再把正常 socket 误判为损坏并每秒销毁重建；真正的 socket 错误仍以受控重试重新绑定。
+- Android 原生日志仅在网卡列表变化时记录网卡快照，避免稳定网络状态下每两秒一次磁盘写入。
+
+### 诊断依据与验证
+
+- 用户导出的魅族20 Android 16 日志显示，`activity_on_stop` 之后仍持续每两秒枚举网卡；网络切换后反复出现 `discovery_announce_failed`、每秒 `discovery_socket_started`，并叠加 VPS DNS 重连失败。该循环与前台恢复卡死相符。
+- 公网协议仍为 3，配对协议仍为 2；未修改 VPS、域名、访问令牌、家庭加密口令或传输格式。
+- v1.7.5+18 Android 测试版已完成用户实机后台恢复回归；正式版使用新的 `versionCode 19`，可直接覆盖该测试版安装。
+- Flutter analyze 与 30 项应用测试通过；Android/Windows Release 构建通过，APK Manifest 为 `1.7.5+19`、v2 签名证书不变，Windows EXE 文件版本为 `1.7.5+19`，Windows ZIP 共 28 个条目且可读。
+- 最终 SHA-256：Android APK `9309BFD85BFA427FA799052CC929ADC500A8CBD0D88BB9524AC1C0EC0E79D834`；Windows ZIP `4CD6866496F98C7FA5FF4BC9004C06FF5731BA55342AABE50254F6F93AB347EF`；Windows EXE `11B9B361575AB125CDB3B1459C398BE28552AA3AC523FADADD11F24D99571FF6`。
+
 ## v1.7.4+17 — 2026-08-29
 
 ### 修复与优化

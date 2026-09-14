@@ -39,6 +39,7 @@ class MainActivity : FlutterActivity() {
     }
 
     private var multicastLock: WifiManager.MulticastLock? = null
+    private var lastNetworkSignature: String? = null
     private var pendingDirectoryResult: MethodChannel.Result? = null
     private var fileChannel: MethodChannel? = null
     private val pendingSharedFiles = mutableListOf<String>()
@@ -231,7 +232,13 @@ class MainActivity : FlutterActivity() {
                     )
                 }
             }
-            nativeLog("network_interfaces count=${result.size}")
+            val signature = result.joinToString("|") { address ->
+                "${address["name"]}:${address["address"]}/${address["prefixLength"]}:${address["broadcast"] ?: ""}"
+            }
+            if (signature != lastNetworkSignature) {
+                lastNetworkSignature = signature
+                nativeLog("network_interfaces count=${result.size}")
+            }
             result
         } catch (error: Exception) {
             nativeLog("network_interfaces_failed", error)

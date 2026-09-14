@@ -137,7 +137,8 @@ class DeviceListPage extends StatefulWidget {
   State<DeviceListPage> createState() => _DeviceListPageState();
 }
 
-class _DeviceListPageState extends State<DeviceListPage> {
+class _DeviceListPageState extends State<DeviceListPage>
+    with WidgetsBindingObserver {
   late final DiscoveryService _discovery;
   late final PairingRelay _pairingRelay;
   late final TransferServer _transferServer;
@@ -165,6 +166,8 @@ class _DeviceListPageState extends State<DeviceListPage> {
   StreamSubscription<RemoteRelayException>? _remoteErrorSubscription;
   Timer? _reconnectTimer;
   Timer? _remoteReconnectTimer;
+  bool _androidInForeground = true;
+  Future<void> _lifecycleTransition = Future.value();
   final ChatHistoryStore _chatStore = ChatHistoryStore();
   final Map<String, List<ChatMessage>> _chatHistory = {};
   final Map<String, ValueNotifier<List<ChatMessage>>> _chatNotifiers = {};
@@ -191,6 +194,7 @@ class _DeviceListPageState extends State<DeviceListPage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _discovery = DiscoveryService(
       widget.identity,
       onLog: (message) => unawaited(_diagnostics.log(message)),
@@ -302,10 +306,72 @@ class _DeviceListPageState extends State<DeviceListPage> {
     unawaited(_loadRemovedDevices());
     unawaited(_startTransferServer());
     unawaited(_configureRemoteRelay());
+    _startRemoteReconnectTimer();
+  }
+
+  bool get _shouldRunNetworkWork => !Platform.isAndroid || _androidInForeground;
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (!Platform.isAndroid) return;
+    _lifecycleTransition = _lifecycleTransition.then(
+      (_) => _applyAndroidLifecycleState(state),
+      onError: (error, stackTrace) => _applyAndroidLifecycleState(state),
+    );
+  }
+
+  Future<void> _applyAndroidLifecycleState(AppLifecycleState state) async {
+    if (!mounted) return;
+    switch (state) {
+      case AppLifecycleState.resumed:
+        await _resumeAndroidNetworkWork();
+      case AppLifecycleState.inactive:
+      case AppLifecycleState.hidden:
+      case AppLifecycleState.paused:
+      case AppLifecycleState.detached:
+        await _pauseAndroidNetworkWork(state);
+    }
+  }
+
+  Future<void> _pauseAndroidNetworkWork(AppLifecycleState state) async {
+    if (!_androidInForeground) return;
+    _androidInForeground = false;
+    await _diagnostics.log('app_lifecycle_paused state=${state.name}');
+    _stopReconnectTimers();
+    await _discovery.pause();
+  }
+
+  Future<void> _resumeAndroidNetworkWork() async {
+    if (_androidInForeground) return;
+    _androidInForeground = true;
+    await _diagnostics.log('app_lifecycle_resumed');
+    await _discovery.resume();
+    await _restorePairing();
+    await _connectRemoteRelay();
+    _startRemoteReconnectTimer();
+  }
+
+  void _startPairingReconnectTimer() {
+    if (!_shouldRunNetworkWork || _reconnectTimer != null) return;
+    _reconnectTimer = Timer.periodic(
+      const Duration(seconds: 5),
+      (_) => unawaited(_tryReconnect()),
+    );
+  }
+
+  void _startRemoteReconnectTimer() {
+    if (!_shouldRunNetworkWork || _remoteReconnectTimer != null) return;
     _remoteReconnectTimer = Timer.periodic(
       const Duration(seconds: 10),
       (_) => unawaited(_connectRemoteRelay()),
     );
+  }
+
+  void _stopReconnectTimers() {
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    _remoteReconnectTimer?.cancel();
+    _remoteReconnectTimer = null;
   }
 
   Future<void> _loadRemovedDevices() async {
@@ -454,6 +520,7 @@ class _DeviceListPageState extends State<DeviceListPage> {
   }
 
   Future<void> _configureRemoteRelay() async {
+    if (!_shouldRunNetworkWork) return;
     await _remoteRelay.disconnect();
     if (!mounted) return;
     setState(() {
@@ -466,7 +533,8 @@ class _DeviceListPageState extends State<DeviceListPage> {
 
   Future<void> _connectRemoteRelay() async {
     final settings = widget.remoteSettings;
-    if (!settings.enabled ||
+    if (!_shouldRunNetworkWork ||
+        !settings.enabled ||
         !settings.isConfigured ||
         _remoteRelay.status != RemoteRelayStatus.disconnected) {
       return;
@@ -859,17 +927,15 @@ class _DeviceListPageState extends State<DeviceListPage> {
 
   Future<void> _restorePairing() async {
     _savedPairing = await _pairingStore.loadEndpoint();
-    if (!mounted) return;
+    if (!mounted || !_shouldRunNetworkWork) return;
     await _tryReconnect();
-    _reconnectTimer ??= Timer.periodic(
-      const Duration(seconds: 5),
-      (_) => unawaited(_tryReconnect()),
-    );
+    _startPairingReconnectTimer();
   }
 
   Future<void> _tryReconnect() async {
     final endpoint = _savedPairing;
-    if (endpoint == null ||
+    if (!_shouldRunNetworkWork ||
+        endpoint == null ||
         _pairedDevices.isNotEmpty ||
         _pairingRelay.isConnecting) {
       return;
@@ -931,6 +997,7 @@ class _DeviceListPageState extends State<DeviceListPage> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _devicesSubscription?.cancel();
     _pairedDevicesSubscription?.cancel();
     _incomingSubscription?.cancel();
@@ -946,8 +1013,7 @@ class _DeviceListPageState extends State<DeviceListPage> {
     _remoteEnvelopeSubscription?.cancel();
     _remoteStatusSubscription?.cancel();
     _remoteErrorSubscription?.cancel();
-    _reconnectTimer?.cancel();
-    _remoteReconnectTimer?.cancel();
+    _stopReconnectTimers();
     _discovery.dispose();
     _transferServer.dispose();
     _receivedFileService.setSharedFilesListener(null);
