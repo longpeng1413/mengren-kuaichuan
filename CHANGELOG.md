@@ -17,14 +17,15 @@
 - 修复便携版 Windows 测试包移动目录后，旧防火墙规则仍绑定旧 EXE、导致手机连接 TCP 53318 超时的问题；防火墙配置脚本现在可自提权、接受明确程序路径并把子进程失败码返回调用方。
 - 新增统一 Windows 打包脚本，发布 ZIP 必定包含 `enable_lan_access.cmd/.ps1` 和安装说明；推荐固定解压目录，移动目录后重新运行脚本，换 Wi-Fi 则不需要重配。
 - 手机向 Windows 直连超时时，错误提示会直接说明重新运行 `enable_lan_access.cmd`，避免只显示底层 Socket 超时。
+- 修正 Android 应用内标题和 Windows 原生窗口标题仍显示 v1.7.5 的问题；新增版本一致性测试，确保界面版本、构建号、`pubspec.yaml` 和 Windows 标题保持同步。
 
 ### 验证
 
-- Flutter analyze 通过；应用 34 项测试通过。
+- Flutter analyze 通过；应用 35 项测试通过。
 - 笔记本已完成 Flutter 3.47.1、JDK 17、Android SDK/NDK 和 Visual Studio C++ Build Tools 环境配置；Android 正式 APK 与 Windows Release 构建通过。
 - 魅族手机与 Windows 笔记本实机验证：双方持续显示；更新防火墙规则绑定到固定安装路径后，电脑→手机、手机→电脑的文字和文件均可直连传输。
 - Android 正式 APK 的版本为 `1.7.6+20`，包名与 v1.7.5 相同，签名证书 SHA-256 为 `FE1C0C4965D1C29D66B6EFDE11F403525261152AB53E18E96AB36FEBFE495464`。
-- 发布文件 SHA-256：Android `B8851878260D942BC88EBC6DEC29309F93817A09D4F23563B3F3E66EE6E74BCF`；Windows `907645188688A5CEB40E6D4E0E4B056E1CD80A23F5F88B4840F90AFC6E315EBE`。
+- 发布文件 SHA-256：Android `639AD3C5A59EF2F71A74BE16AF7A85F9B19E973F54B16CD4A83853B0994D9B64`；Windows `CE8A9C599DC3310B0A0236447612F420C6FCCBC61DAA675FBE6E4E798CFD1FA6`。
 
 ## v1.7.5+19 — 2026-09-14
 
