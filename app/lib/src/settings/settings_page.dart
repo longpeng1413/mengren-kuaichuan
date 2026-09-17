@@ -53,7 +53,7 @@ class _SettingsPageState extends State<SettingsPage> {
     _settings = widget.initialSettings;
     _remoteSettings = widget.initialRemoteSettings;
     _removedDevices = List.of(widget.removedDevices);
-    if (Platform.isAndroid) _refreshDiagnosticInfo();
+    if (Platform.isAndroid || Platform.isWindows) _refreshDiagnosticInfo();
   }
 
   Future<void> _refreshDiagnosticInfo() async {
@@ -485,9 +485,13 @@ class _SettingsPageState extends State<SettingsPage> {
               ),
             ),
           ],
-          if (Platform.isAndroid) ...[
+          if (Platform.isAndroid || Platform.isWindows) ...[
             const Divider(height: 32),
-            Text('诊断', style: Theme.of(context).textTheme.titleMedium),
+            Text(
+              '诊断',
+              key: const Key('diagnostics_section'),
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
             const SizedBox(height: 4),
             ListTile(
               contentPadding: EdgeInsets.zero,

@@ -31,6 +31,49 @@ void main() {
       expect(network.calls, 0);
     },
   );
+
+  test('direct discovery replies are rate limited per peer', () {
+    final firstReplyAt = DateTime.utc(2026, 9, 17, 8);
+    const cooldown = Duration(seconds: 1);
+
+    expect(
+      shouldReplyToDiscoveryAnnouncement(
+        lastReplyAt: null,
+        now: firstReplyAt,
+        cooldown: cooldown,
+      ),
+      isTrue,
+    );
+    expect(
+      shouldReplyToDiscoveryAnnouncement(
+        lastReplyAt: firstReplyAt,
+        now: firstReplyAt.add(const Duration(milliseconds: 999)),
+        cooldown: cooldown,
+      ),
+      isFalse,
+    );
+    expect(
+      shouldReplyToDiscoveryAnnouncement(
+        lastReplyAt: firstReplyAt,
+        now: firstReplyAt.add(cooldown),
+        cooldown: cooldown,
+      ),
+      isTrue,
+    );
+  });
+
+  test('direct discovery replies recover after a wall-clock rollback', () {
+    final lastReplyAt = DateTime.utc(2026, 9, 17, 8, 0, 10);
+
+    expect(
+      shouldReplyToDiscoveryAnnouncement(
+        lastReplyAt: lastReplyAt,
+        now: lastReplyAt.subtract(const Duration(seconds: 5)),
+        cooldown: const Duration(seconds: 1),
+      ),
+      isTrue,
+    );
+  });
 }
 
 class _CountingNetworkService extends LocalNetworkService {

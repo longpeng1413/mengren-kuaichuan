@@ -17,6 +17,7 @@ class DiscoveryService {
   static const transferPort = 53318;
   static const _announceEvery = Duration(seconds: 2);
   static const _offlineAfter = Duration(seconds: 7);
+  static const _directReplyCooldown = Duration(seconds: 1);
 
   DeviceIdentity _identity;
   final LocalNetworkService _networkService;
@@ -33,6 +34,7 @@ class DiscoveryService {
   String? _lastNetworkSignature;
 
   final Map<String, DiscoveredDevice> _devices = {};
+  final Map<String, DateTime> _lastDirectReplyAt = {};
   final StreamController<List<DiscoveredDevice>> _devicesController =
       StreamController<List<DiscoveredDevice>>.broadcast();
 
@@ -120,6 +122,12 @@ class DiscoveryService {
 
       final now = DateTime.now();
       final existing = _devices[message.deviceId];
+      if (existing == null) {
+        _onLog?.call(
+          'discovery_peer_seen peer=${message.deviceId.substring(0, 8)} '
+          'address=${datagram.address.address}',
+        );
+      }
       _devices[message.deviceId] = existing == null
           ? DiscoveredDevice(
               deviceId: message.deviceId,
@@ -136,7 +144,44 @@ class DiscoveryService {
               transferPort: message.transferPort,
               at: now,
             );
+      _replyDirectlyTo(message.deviceId, datagram.address, now);
       _emitDevices();
+    }
+  }
+
+  void _replyDirectlyTo(
+    String deviceId,
+    InternetAddress address,
+    DateTime now,
+  ) {
+    if (!isUsableLanIpv4(address.address) ||
+        !shouldReplyToDiscoveryAnnouncement(
+          lastReplyAt: _lastDirectReplyAt[deviceId],
+          now: now,
+          cooldown: _directReplyCooldown,
+        )) {
+      return;
+    }
+
+    final socket = _socket;
+    if (socket == null) return;
+
+    // Record the attempt before sending. If the route is temporarily broken,
+    // this prevents a burst of incoming announcements from causing a reply
+    // loop or repeatedly hitting the same socket error.
+    _lastDirectReplyAt[deviceId] = now;
+    try {
+      if (socket.send(_announcementBytes(), address, discoveryPort) <= 0) {
+        _onLog?.call(
+          'discovery_direct_reply_failed target=${address.address} '
+          'reason=no_bytes_sent',
+        );
+      }
+    } on SocketException catch (error) {
+      _onLog?.call(
+        'discovery_direct_reply_failed target=${address.address} '
+        'error=${error.message}',
+      );
     }
   }
 
@@ -167,14 +212,7 @@ class DiscoveryService {
         );
       }
 
-      final message = DiscoveryMessage(
-        deviceId: _identity.deviceId,
-        displayName: _identity.displayName,
-        platform: _identity.platform,
-        transferPort: transferPort,
-      );
-
-      final bytes = message.encode();
+      final bytes = _announcementBytes();
       var sentAny = false;
       for (final target in targets) {
         try {
@@ -207,8 +245,18 @@ class DiscoveryService {
     final cutoff = DateTime.now().subtract(_offlineAfter);
     final before = _devices.length;
     _devices.removeWhere((_, device) => device.lastSeen.isBefore(cutoff));
+    _lastDirectReplyAt.removeWhere(
+      (deviceId, _) => !_devices.containsKey(deviceId),
+    );
     if (_devices.length != before) _emitDevices();
   }
+
+  List<int> _announcementBytes() => DiscoveryMessage(
+    deviceId: _identity.deviceId,
+    displayName: _identity.displayName,
+    platform: _identity.platform,
+    transferPort: transferPort,
+  ).encode();
 
   void _emitDevices() {
     final snapshot = _devices.values.toList()
@@ -256,4 +304,13 @@ class DiscoveryService {
     await _closeSocket();
     await _devicesController.close();
   }
+}
+
+bool shouldReplyToDiscoveryAnnouncement({
+  required DateTime? lastReplyAt,
+  required DateTime now,
+  required Duration cooldown,
+}) {
+  if (lastReplyAt == null || now.isBefore(lastReplyAt)) return true;
+  return now.difference(lastReplyAt) >= cooldown;
 }

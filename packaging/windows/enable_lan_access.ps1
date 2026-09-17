@@ -1,20 +1,39 @@
+param(
+    [string]$ProgramPath
+)
+
 $ErrorActionPreference = 'Stop'
+
+$program = if ([string]::IsNullOrWhiteSpace($ProgramPath)) {
+    Join-Path $PSScriptRoot 'lan_transfer.exe'
+} else {
+    $ProgramPath
+}
+if (-not (Test-Path -LiteralPath $program -PathType Leaf)) {
+    throw "Application executable not found: $program"
+}
+$program = (Resolve-Path -LiteralPath $program).Path
 
 $isAdministrator = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
     [Security.Principal.WindowsBuiltInRole]::Administrator
 )
 if (-not $isAdministrator) {
-    Start-Process `
+    $arguments = @(
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-File',
+        ('"' + $PSCommandPath + '"'),
+        '-ProgramPath',
+        ('"' + $program + '"')
+    )
+    $elevated = Start-Process `
         -FilePath 'powershell.exe' `
-        -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $PSCommandPath + '"')) `
+        -ArgumentList $arguments `
         -Verb RunAs `
-        -Wait
-    exit
-}
-
-$program = Join-Path $PSScriptRoot 'lan_transfer.exe'
-if (-not (Test-Path -LiteralPath $program -PathType Leaf)) {
-    throw "Application executable not found: $program"
+        -Wait `
+        -PassThru
+    exit $elevated.ExitCode
 }
 
 $rules = @(
@@ -48,4 +67,5 @@ foreach ($definition in $rules) {
         -RemoteAddress @('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16') | Out-Null
 }
 
-Write-Host 'Mengren Quick Transfer LAN firewall rules are enabled.' -ForegroundColor Green
+Write-Host 'Mengren Quick Transfer LAN firewall rules are enabled for:' -ForegroundColor Green
+Write-Host $program -ForegroundColor Green

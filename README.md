@@ -1,8 +1,8 @@
 # 猛人快传
 
-这是一个面向 Android 与 Windows 的传输工具。v1.7.5 在保留局域网优先和自建 VPS 端到端加密传输的基础上，修复 Android 长时间后台后恢复前台可能无响应的问题。
+这是一个面向 Android 与 Windows 的传输工具。v1.7.6 在保留局域网优先和自建 VPS 端到端加密传输的基础上，修复部分 Wi-Fi 中单向广播导致 Windows 无法持续发现手机，以及便携版移动目录后防火墙规则仍绑定旧程序路径的问题。
 
-安装、远程配置和常见问题见 [v1.7.5 安装与使用说明](docs/猛人快传-v1.7.5-安装与使用说明.md)，完整服务器步骤见 [自建 VPS 中转指南](docs/自建VPS中转指南-v1.7.2.md)，版本更新摘要见 [v1.7.5 发布说明](docs/猛人快传-v1.7.5-发布说明.md)。
+安装、远程配置和常见问题见 [v1.7.6 安装与使用说明](docs/猛人快传-v1.7.6-安装与使用说明.md)，完整服务器步骤见 [自建 VPS 中转指南](docs/自建VPS中转指南-v1.7.2.md)，版本更新摘要见 [v1.7.6 发布说明](docs/猛人快传-v1.7.6-发布说明.md)。
 
 > 猛人快传不提供公共中转服务器。请部署并填写你自己的 VPS、域名和访问令牌；
 > 不要使用软件作者或其他人的中转地址。安装包不包含任何可使用的 VPS 令牌、
@@ -58,9 +58,10 @@
 - 会话可清空消息/缓存或移除设备，已保存文件不受缓存清理影响。
 - 可选择主题颜色、默认保存位置和 Windows 开机自启动。
 - 支持完整浅色、深色、跟随系统模式，并可单独选择强调色。
-- Android 诊断日志可导出/清除，按 1 MB 轮换并清理 7 天前的记录。
+- Android 与 Windows 诊断日志可导出/清除，按 1 MB 轮换并清理 7 天前的记录；Windows 导出文件保存在“下载/猛人快传”。
 - Windows 关闭按钮隐藏到系统托盘，单击托盘图标恢复，右键菜单可彻底退出。
 - Windows 单实例运行；再次点击快捷方式会恢复原窗口，不会重复占用接收端口。
+- Windows 发布包包含 `enable_lan_access.cmd/.ps1`；首次解压或移动目录后运行一次，会把 UDP 53317、TCP 53318 的入站规则更新到当前 EXE 路径，并同时覆盖公用、专用和域网络中的私有局域网地址。
 - 二级路由环境优先使用已建立的双向二维码配对通道。
 - Windows 使用系统提供的真实 IPv4 前缀计算广播地址，支持 `/23` 等非 `/24` 的有线网络。
 - 同一设备同时存在已验证的局域网直连和二维码通道时优先直连，连接失败自动回退二维码通道。
@@ -77,14 +78,17 @@
 
 ## 开发环境
 
-项目内已放置 Flutter SDK（`.tools/flutter`，不会提交到 Git）。由于当前项目绝对路径含中文，而 Flutter 3.47 的部分 Windows 工具对中文路径兼容不完整，使用包装脚本可临时映射纯英文盘符：
+开发工具统一安装在 `D:\yinyong\MengrenDev`，仓库中的 `.tools` 是指向该目录的本地连接，不会提交到 Git。使用包装脚本可自动配置 Flutter、JDK、Android SDK、Pub 和 Gradle 路径：
 
 ```powershell
 .\scripts\flutter.ps1 analyze
 .\scripts\flutter.ps1 test
+.\scripts\flutter.ps1 build apk --release
+.\scripts\flutter.ps1 build windows --release
+.\scripts\package_windows.ps1 -SkipBuild
 ```
 
-生成 Windows 安装包前还需安装 Visual Studio 的“使用 C++ 的桌面开发”组件，并启用 Windows 开发人员模式。生成 Android APK 前还需安装 Android SDK、platform-tools 和对应构建工具。
+Windows 打包脚本会把防火墙配置脚本和安装说明一起放入 ZIP，避免只压缩 Flutter 的原始 Release 目录。生成 Windows 包需要 Visual Studio 的“使用 C++ 的桌面开发”组件并启用 Windows 开发人员模式；生成 Android APK 需要 Android SDK、platform-tools 和对应构建工具。
 
 ## 许可证与品牌
 

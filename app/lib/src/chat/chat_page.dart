@@ -239,8 +239,14 @@ class _ChatPageState extends State<ChatPage> {
 
   void _showError(Object error) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text('发送失败：$error')));
+    final details = error.toString();
+    final windowsFirewallHint =
+        widget.device.platform == 'windows' && details.contains('无法连接接收设备')
+        ? '\n请在电脑端重新运行安装目录中的 enable_lan_access.cmd，并允许 Windows 用户账户控制。'
+        : '';
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('发送失败：$details$windowsFirewallHint')),
+    );
   }
 
   Future<void> _openConversationMenu() async {

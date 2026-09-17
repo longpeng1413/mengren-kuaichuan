@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lan_transfer/src/chat/chat_message.dart';
@@ -209,6 +211,16 @@ void main() {
         ),
       ),
     );
+
+    if (Platform.isWindows) {
+      await tester.scrollUntilVisible(
+        find.byKey(const Key('diagnostics_section')),
+        220,
+        scrollable: find.byType(Scrollable),
+      );
+      expect(find.text('导出诊断日志'), findsOneWidget);
+      expect(find.text('清除诊断日志'), findsOneWidget);
+    }
 
     await tester.scrollUntilVisible(
       find.text('公网远程传输'),

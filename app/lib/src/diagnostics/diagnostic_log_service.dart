@@ -71,17 +71,37 @@ class DiagnosticLogService {
 
   Future<String> export() async {
     await _writeQueue;
-    if (!Platform.isAndroid) {
-      throw const FileSystemException('诊断日志导出目前仅用于 Android');
+    if (Platform.isAndroid) {
+      final result = await _channel.invokeMapMethod<String, dynamic>(
+        'exportDiagnostics',
+      );
+      final location = result?['location'];
+      if (location is! String || location.isEmpty) {
+        throw const FileSystemException('系统没有返回日志保存位置');
+      }
+      return location;
     }
-    final result = await _channel.invokeMapMethod<String, dynamic>(
-      'exportDiagnostics',
+    if (!Platform.isWindows) {
+      throw const FileSystemException('当前平台不支持导出诊断日志');
+    }
+
+    final root =
+        await getDownloadsDirectory() ??
+        await getApplicationDocumentsDirectory();
+    final exportDirectory = Directory(path.join(root.path, '猛人快传'));
+    await exportDirectory.create(recursive: true);
+    final destination = File(
+      path.join(
+        exportDirectory.path,
+        '猛人快传-诊断日志-${_fileTimestamp(DateTime.now())}.txt',
+      ),
     );
-    final location = result?['location'];
-    if (location is! String || location.isEmpty) {
-      throw const FileSystemException('系统没有返回日志保存位置');
-    }
-    return location;
+    await exportDiagnosticFiles(
+      files: await _diagnosticFiles(),
+      destination: destination,
+      platformDescription: Platform.operatingSystemVersion,
+    );
+    return destination.path;
   }
 
   Future<void> clear() async {
@@ -140,6 +160,38 @@ class DiagnosticLogService {
       if ((await file.lastModified()).isBefore(cutoff)) await file.delete();
     }
   }
+}
+
+Future<void> exportDiagnosticFiles({
+  required Iterable<File> files,
+  required File destination,
+  required String platformDescription,
+}) async {
+  final sortedFiles = files.toList()
+    ..sort((left, right) => left.path.compareTo(right.path));
+  final output = destination.openWrite(mode: FileMode.writeOnly);
+  try {
+    output.writeln('猛人快传诊断日志');
+    output.writeln('平台：Windows · ${_singleLine(platformDescription, 500)}');
+    output.writeln('日志最多保留 7 天；不包含聊天文字、文件内容、口令或令牌。');
+    for (final file in sortedFiles) {
+      output.writeln();
+      output.writeln('===== ${path.basename(file.path)} =====');
+      await output.addStream(file.openRead());
+      output.writeln();
+    }
+    await output.flush();
+  } finally {
+    await output.close();
+  }
+}
+
+String _fileTimestamp(DateTime value) {
+  String twoDigits(int number) => number.toString().padLeft(2, '0');
+  String threeDigits(int number) => number.toString().padLeft(3, '0');
+  return '${value.year}${twoDigits(value.month)}${twoDigits(value.day)}-'
+      '${twoDigits(value.hour)}${twoDigits(value.minute)}'
+      '${twoDigits(value.second)}${threeDigits(value.millisecond)}';
 }
 
 String _singleLine(String value, int maxLength) {
