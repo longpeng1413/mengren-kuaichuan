@@ -229,6 +229,20 @@ class DiscoveryService {
           );
         }
       }
+      final directTargets = discoveryUnicastTargets(
+        peerAddresses: _devices.values.map((device) => device.address.address),
+        localAddresses: addresses.map((address) => address.address),
+      );
+      for (final target in directTargets) {
+        try {
+          sentAny = socket.send(bytes, target, discoveryPort) > 0 || sentAny;
+        } on SocketException catch (error) {
+          _onLog?.call(
+            'discovery_unicast_failed target=${target.address} '
+            'error=${error.message}',
+          );
+        }
+      }
       if (!sentAny) {
         // A broadcast can be rejected while a phone switches networks or is
         // backgrounded. That does not mean the bound UDP socket is broken;
@@ -324,3 +338,19 @@ bool shouldSendDirectDiscoveryReply({
   required String localPlatform,
   required String peerPlatform,
 }) => localPlatform == 'android' && peerPlatform == 'windows';
+
+List<InternetAddress> discoveryUnicastTargets({
+  required Iterable<String> peerAddresses,
+  required Iterable<String> localAddresses,
+}) {
+  final local = localAddresses.toSet();
+  final targets =
+      peerAddresses
+          .where(
+            (address) => isUsableLanIpv4(address) && !local.contains(address),
+          )
+          .toSet()
+          .toList()
+        ..sort(compareIpv4Addresses);
+  return targets.map(InternetAddress.new).toList(growable: false);
+}

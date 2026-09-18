@@ -105,6 +105,21 @@ void main() {
       isFalse,
     );
   });
+
+  test('known peers become deduplicated unicast announcement targets', () {
+    final targets = discoveryUnicastTargets(
+      peerAddresses: const [
+        '192.168.3.21',
+        '192.168.3.21',
+        '192.168.3.22',
+        '8.8.8.8',
+        'invalid',
+      ],
+      localAddresses: const ['192.168.3.22'],
+    );
+
+    expect(targets.map((target) => target.address), ['192.168.3.21']);
+  });
 }
 
 class _CountingNetworkService extends LocalNetworkService {
