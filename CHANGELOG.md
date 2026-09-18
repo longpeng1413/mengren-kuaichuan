@@ -6,7 +6,7 @@
 
 - 暂无。
 
-## v1.7.6+21 — 2026-09-18
+## v1.7.6+22 — 2026-09-18
 
 ### 修复与优化
 
@@ -18,14 +18,15 @@
 - 新增统一 Windows 打包脚本，发布 ZIP 必定包含 `enable_lan_access.cmd/.ps1` 和安装说明；推荐固定解压目录，移动目录后重新运行脚本，换 Wi-Fi 则不需要重配。
 - 手机向 Windows 直连超时时，错误提示会直接说明重新运行 `enable_lan_access.cmd`，避免只显示底层 Socket 超时。
 - 修正 Android 应用内标题和 Windows 原生窗口标题仍显示 v1.7.5 的问题；新增版本一致性测试，确保界面版本、构建号、`pubspec.yaml` 和 Windows 标题保持同步。
+- 根据双 Android 手机诊断日志修复“手机设备约 7–8 秒后消失、随后偶尔重现”的问题：把 v1.7.6 新增的单播回应严格限制为“Android 回应 Windows”，Android 与 Android、Windows 与 Android/Windows 均恢复 v1.7.5 的纯广播发现路径，不改变原有 2 秒广播与 7 秒离线规则。
 
 ### 验证
 
-- Flutter analyze 通过；应用 35 项测试通过。
+- Flutter analyze 通过；应用 36 项测试通过。
 - 笔记本已完成 Flutter 3.47.1、JDK 17、Android SDK/NDK 和 Visual Studio C++ Build Tools 环境配置；Android 正式 APK 与 Windows Release 构建通过。
 - 魅族手机与 Windows 笔记本实机验证：双方持续显示；更新防火墙规则绑定到固定安装路径后，电脑→手机、手机→电脑的文字和文件均可直连传输。
-- Android 正式 APK 的版本为 `1.7.6+21`，包名与 v1.7.5 相同，签名证书 SHA-256 为 `FE1C0C4965D1C29D66B6EFDE11F403525261152AB53E18E96AB36FEBFE495464`。构建号从已发布但版本文字错误的 20 提升到 21，确保手机可保留数据直接覆盖安装修正版。
-- 发布文件 SHA-256：Android `112ADCA4168A9475E34EB61D7DD643333F996237D38C8E43571150E5E1F3E97C`；Windows `CDB0FE893181F7FEB30D2A703A675E83D48F78A7E94EC476BFBB3073FCC9870A`。
+- Android 正式 APK 的版本为 `1.7.6+22`，包名与 v1.7.5 相同，签名证书 SHA-256 为 `FE1C0C4965D1C29D66B6EFDE11F403525261152AB53E18E96AB36FEBFE495464`。构建号 22 可保留数据直接覆盖 v1.7.5 和先前的 v1.7.6 构建。
+- 发布文件 SHA-256：Android `798CF9B6D23570CD9A3AB36C241613CE4DD8766E73513ACE717A41AB96A0DF99`；Windows `A0F2589C3899D48F53D1DE1D40907FD992AD210809E52ECD72078118E136F1D7`。
 
 ## v1.7.5+19 — 2026-09-14
 

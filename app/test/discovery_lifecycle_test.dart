@@ -74,6 +74,37 @@ void main() {
       isTrue,
     );
   });
+
+  test('direct discovery reply is limited to Android answering Windows', () {
+    expect(
+      shouldSendDirectDiscoveryReply(
+        localPlatform: 'android',
+        peerPlatform: 'windows',
+      ),
+      isTrue,
+    );
+    expect(
+      shouldSendDirectDiscoveryReply(
+        localPlatform: 'android',
+        peerPlatform: 'android',
+      ),
+      isFalse,
+    );
+    expect(
+      shouldSendDirectDiscoveryReply(
+        localPlatform: 'windows',
+        peerPlatform: 'android',
+      ),
+      isFalse,
+    );
+    expect(
+      shouldSendDirectDiscoveryReply(
+        localPlatform: 'windows',
+        peerPlatform: 'windows',
+      ),
+      isFalse,
+    );
+  });
 }
 
 class _CountingNetworkService extends LocalNetworkService {

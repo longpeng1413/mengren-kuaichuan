@@ -144,7 +144,12 @@ class DiscoveryService {
               transferPort: message.transferPort,
               at: now,
             );
-      _replyDirectlyTo(message.deviceId, datagram.address, now);
+      if (shouldSendDirectDiscoveryReply(
+        localPlatform: _identity.platform,
+        peerPlatform: message.platform,
+      )) {
+        _replyDirectlyTo(message.deviceId, datagram.address, now);
+      }
       _emitDevices();
     }
   }
@@ -314,3 +319,8 @@ bool shouldReplyToDiscoveryAnnouncement({
   if (lastReplyAt == null || now.isBefore(lastReplyAt)) return true;
   return now.difference(lastReplyAt) >= cooldown;
 }
+
+bool shouldSendDirectDiscoveryReply({
+  required String localPlatform,
+  required String peerPlatform,
+}) => localPlatform == 'android' && peerPlatform == 'windows';
