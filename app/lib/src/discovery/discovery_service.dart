@@ -11,22 +11,30 @@ class DiscoveryService {
     this._identity, {
     this._networkService = const LocalNetworkService(),
     this._onLog,
-  });
+    Future<RawDatagramSocket> Function()? bindSocket,
+  }) : _socketBinder = bindSocket ?? _bindDiscoverySocket;
 
   static const discoveryPort = 53317;
   static const transferPort = 53318;
   static const _announceEvery = Duration(seconds: 2);
   static const _offlineAfter = Duration(seconds: 7);
   static const _directReplyCooldown = Duration(seconds: 1);
+  static const _maxDatagramsPerRead = 32;
+  static const _maxEmptyReads = 8;
 
   DeviceIdentity _identity;
   final LocalNetworkService _networkService;
   final void Function(String message)? _onLog;
+  final Future<RawDatagramSocket> Function() _socketBinder;
   RawDatagramSocket? _socket;
   StreamSubscription<RawSocketEvent>? _socketSubscription;
   Timer? _announceTimer;
   Timer? _cleanupTimer;
   Timer? _bindRetryTimer;
+  Timer? _readResumeTimer;
+  Future<void>? _binding;
+  int _socketGeneration = 0;
+  int _emptyReads = 0;
   bool _disposed = false;
   bool _paused = false;
   bool _announcing = false;
@@ -84,74 +92,121 @@ class DiscoveryService {
     if (_isActive) unawaited(announce());
   }
 
-  Future<void> _bindSocket() async {
-    if (_socket != null || !_isActive) return;
+  Future<void> _bindSocket() {
+    if (_socket != null ||
+        !_isActive ||
+        _restartingSocket ||
+        _bindRetryTimer?.isActive == true) {
+      return Future.value();
+    }
+    // Timer retries and announce() can overlap after sleep/network changes.
+    // Publish only one socket/subscription; never orphan a previous listener.
+    return _binding ??= _openSocket().whenComplete(() => _binding = null);
+  }
 
+  Future<void> _openSocket() async {
+    final generation = _socketGeneration;
     try {
-      final socket = await RawDatagramSocket.bind(
-        InternetAddress.anyIPv4,
-        discoveryPort,
-        reuseAddress: true,
-      );
-      if (!_isActive) {
+      final socket = await _socketBinder();
+      if (!_isActive || generation != _socketGeneration) {
         socket.close();
         return;
       }
       socket.broadcastEnabled = true;
+      socket.writeEventsEnabled = false;
+      _emptyReads = 0;
       _socket = socket;
       _socketSubscription = socket.listen(
-        _handleSocketEvent,
-        onError: (_) => _restartSocket(),
-        onDone: _restartSocket,
+        (event) => _handleSocketEvent(socket, event),
+        onError: (_) => unawaited(_restartSocket(socket)),
+        onDone: () => unawaited(_restartSocket(socket)),
         cancelOnError: false,
       );
       _onLog?.call('discovery_socket_started port=$discoveryPort');
     } on SocketException catch (error) {
       _onLog?.call('discovery_socket_bind_failed error=${error.message}');
-      _scheduleBindRetry(const Duration(seconds: 2));
+      if (generation == _socketGeneration) {
+        _scheduleBindRetry(const Duration(seconds: 2));
+      }
     }
   }
 
-  void _handleSocketEvent(RawSocketEvent event) {
-    if (event != RawSocketEvent.read) return;
-
-    Datagram? datagram;
-    while ((datagram = _socket?.receive()) != null) {
-      final message = DiscoveryMessage.tryDecode(datagram!.data);
-      if (message == null || message.deviceId == _identity.deviceId) continue;
-
-      final now = DateTime.now();
-      final existing = _devices[message.deviceId];
-      if (existing == null) {
-        _onLog?.call(
-          'discovery_peer_seen peer=${message.deviceId.substring(0, 8)} '
-          'address=${datagram.address.address}',
-        );
-      }
-      _devices[message.deviceId] = existing == null
-          ? DiscoveredDevice(
-              deviceId: message.deviceId,
-              displayName: message.displayName,
-              platform: message.platform,
-              address: datagram.address,
-              transferPort: message.transferPort,
-              lastSeen: now,
-            )
-          : existing.seenAgain(
-              displayName: message.displayName,
-              platform: message.platform,
-              address: datagram.address,
-              transferPort: message.transferPort,
-              at: now,
-            );
-      if (shouldSendDirectDiscoveryReply(
-        localPlatform: _identity.platform,
-        peerPlatform: message.platform,
-      )) {
-        _replyDirectlyTo(message.deviceId, datagram.address, now);
-      }
-      _emitDevices();
+  void _handleSocketEvent(RawDatagramSocket socket, RawSocketEvent event) {
+    if (event != RawSocketEvent.read ||
+        !_isActive ||
+        !identical(socket, _socket) ||
+        !socket.readEventsEnabled) {
+      return;
     }
+
+    // The VM reissues UDP readiness via microtasks while it believes data is
+    // available. Windows can report readiness but receive() return null after
+    // a network change. Disable it BEFORE draining and resume via a Timer, not
+    // a Future/microtask: otherwise this starves Flutter and the tray forever.
+    socket.readEventsEnabled = false;
+    _readResumeTimer?.cancel();
+    var received = 0;
+    var changed = false;
+    try {
+      for (; received < _maxDatagramsPerRead; received++) {
+        final datagram = socket.receive();
+        if (datagram == null) break;
+        final message = DiscoveryMessage.tryDecode(datagram.data);
+        if (message == null || message.deviceId == _identity.deviceId) continue;
+
+        final now = DateTime.now();
+        final existing = _devices[message.deviceId];
+        if (existing == null) {
+          _onLog?.call(
+            'discovery_peer_seen peer=${message.deviceId.substring(0, 8)} '
+            'address=${datagram.address.address}',
+          );
+        }
+        _devices[message.deviceId] = existing == null
+            ? DiscoveredDevice(
+                deviceId: message.deviceId,
+                displayName: message.displayName,
+                platform: message.platform,
+                address: datagram.address,
+                transferPort: message.transferPort,
+                lastSeen: now,
+              )
+            : existing.seenAgain(
+                displayName: message.displayName,
+                platform: message.platform,
+                address: datagram.address,
+                transferPort: message.transferPort,
+                at: now,
+              );
+        if (shouldSendDirectDiscoveryReply(
+          localPlatform: _identity.platform,
+          peerPlatform: message.platform,
+        )) {
+          _replyDirectlyTo(message.deviceId, datagram.address, now);
+        }
+        changed = true;
+      }
+    } on SocketException catch (error) {
+      _onLog?.call('discovery_read_failed error=${error.message}');
+      unawaited(_restartSocket(socket));
+      return;
+    }
+    if (changed) _emitDevices();
+    _emptyReads = received == 0 ? _emptyReads + 1 : 0;
+    if (_emptyReads >= _maxEmptyReads) {
+      _onLog?.call('discovery_read_stalled action=restart_socket');
+      unawaited(_restartSocket(socket));
+      return;
+    }
+    final delay = received == 0
+        ? Duration(milliseconds: 20 * (1 << (_emptyReads - 1)))
+        : Duration.zero;
+    _readResumeTimer = Timer(delay, () {
+      _readResumeTimer = null;
+      if (_isActive && identical(socket, _socket)) {
+        socket.readEventsEnabled = true;
+      }
+    });
   }
 
   void _replyDirectlyTo(
@@ -287,10 +342,11 @@ class DiscoveryService {
     _devicesController.add(List.unmodifiable(snapshot));
   }
 
-  Future<void> _restartSocket() async {
-    if (!_isActive || _restartingSocket) return;
+  Future<void> _restartSocket(RawDatagramSocket source) async {
+    if (!_isActive || _restartingSocket || !identical(source, _socket)) return;
     _restartingSocket = true;
     try {
+      _onLog?.call('discovery_socket_restart scheduled_delay_ms=2000');
       await _closeSocket();
       _scheduleBindRetry(const Duration(seconds: 2));
     } finally {
@@ -299,12 +355,20 @@ class DiscoveryService {
   }
 
   Future<void> _closeSocket() async {
+    _socketGeneration++;
+    _readResumeTimer?.cancel();
+    _readResumeTimer = null;
     final subscription = _socketSubscription;
     _socketSubscription = null;
     final socket = _socket;
     _socket = null;
+    // Stop the native read microtask loop before waiting for cancellation.
+    if (socket != null) {
+      socket.readEventsEnabled = false;
+      socket.writeEventsEnabled = false;
+      socket.close();
+    }
     await subscription?.cancel();
-    socket?.close();
   }
 
   void _scheduleBindRetry(Duration delay) {
@@ -324,6 +388,12 @@ class DiscoveryService {
     await _devicesController.close();
   }
 }
+
+Future<RawDatagramSocket> _bindDiscoverySocket() => RawDatagramSocket.bind(
+  InternetAddress.anyIPv4,
+  DiscoveryService.discoveryPort,
+  reuseAddress: true,
+);
 
 bool shouldReplyToDiscoveryAnnouncement({
   required DateTime? lastReplyAt,

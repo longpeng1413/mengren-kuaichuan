@@ -52,6 +52,10 @@ Copy-Item `
     -LiteralPath (Join-Path $projectRoot 'docs\猛人快传-安装测试说明.txt') `
     -Destination $staging `
     -Force
+$versionGuide = Join-Path $projectRoot "docs\猛人快传-v$versionName-安装与测试说明.md"
+if (Test-Path -LiteralPath $versionGuide -PathType Leaf) {
+    Copy-Item -LiteralPath $versionGuide -Destination $staging
+}
 
 if (Test-Path -LiteralPath $archive) {
     Remove-Item -LiteralPath $archive -Force

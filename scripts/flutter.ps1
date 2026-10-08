@@ -5,13 +5,22 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
+$mappedDrive = $false
+if ($projectRoot -match '[^\x00-\x7F]') {
+    if (Test-Path 'L:\') { throw 'Drive L: is occupied; refusing to replace it.' }
+    & subst.exe L: $projectRoot
+    if ($LASTEXITCODE -ne 0) { throw 'Unable to map the project to drive L:.' }
+    $projectRoot = 'L:\'
+    $mappedDrive = $true
+}
 $toolsRoot = Join-Path $projectRoot '.tools'
 $exitCode = 0
 
-if (-not (Test-Path -LiteralPath $toolsRoot)) {
-    throw "Development tools were not found at $toolsRoot."
-}
-$env:PUB_HOSTED_URL = 'https://pub.flutter-io.cn'
+try {
+    if (-not (Test-Path -LiteralPath $toolsRoot)) {
+        throw "Development tools were not found at $toolsRoot."
+    }
+    $env:PUB_HOSTED_URL = 'https://pub.flutter-io.cn'
     $env:FLUTTER_STORAGE_BASE_URL = 'https://storage.flutter-io.cn'
     $env:FLUTTER_SUPPRESS_ANALYTICS = 'true'
     $env:PUB_CACHE = Join-Path $toolsRoot 'pub-cache'
@@ -37,4 +46,8 @@ $env:PUB_HOSTED_URL = 'https://pub.flutter-io.cn'
     finally {
         Pop-Location
     }
+}
+finally {
+    if ($mappedDrive) { & subst.exe L: /D }
+}
 exit $exitCode
