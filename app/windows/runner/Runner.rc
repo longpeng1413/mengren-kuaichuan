@@ -94,7 +94,9 @@ BEGIN
             VALUE "FileVersion", VERSION_AS_STRING "\0"
             VALUE "InternalName", "lan_transfer" "\0"
             VALUE "LegalCopyright", "Copyright (C) 2026 com.personal.lantransfer. All rights reserved." "\0"
-            VALUE "OriginalFilename", "lan_transfer.exe" "\0"
+            VALUE "OriginalFilename", "猛人快传.exe" "\0"
+            // Storage plugins use CompanyName/ProductName as the data identity.
+            // Keep these stable even when the visible executable is renamed.
             VALUE "ProductName", "lan_transfer" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END

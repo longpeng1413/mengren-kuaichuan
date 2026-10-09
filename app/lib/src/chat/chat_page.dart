@@ -6,12 +6,12 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path/path.dart' as path;
-import 'package:url_launcher/url_launcher.dart';
 
 import '../discovery/discovered_device.dart';
 import '../storage/received_file_service.dart';
 import '../transfer/transfer_models.dart';
 import 'chat_message.dart';
+import 'chat_text_message.dart';
 
 typedef SendChatText = Future<void> Function(String text);
 typedef ClearConversation = Future<void> Function(bool deleteCache);
@@ -666,7 +666,7 @@ class _MessageBubble extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             if (message.kind == ChatMessageKind.text)
-              _TextMessage(text: message.text ?? '')
+              ChatTextMessage(text: message.text ?? '')
             else
               _FileMessage(message: message),
             const SizedBox(height: 4),
@@ -676,28 +676,6 @@ class _MessageBubble extends StatelessWidget {
                   ?.copyWith(color: colors.onSurfaceVariant),
             ),
           ],
-        ),
-      ),
-    );
-  }
-}
-
-class _TextMessage extends StatelessWidget {
-  const _TextMessage({required this.text});
-
-  final String text;
-
-  @override
-  Widget build(BuildContext context) {
-    final uri = _httpUri(text);
-    if (uri == null) return SelectableText(text);
-    return InkWell(
-      onTap: () => launchUrl(uri, mode: LaunchMode.externalApplication),
-      child: Text(
-        text,
-        style: TextStyle(
-          color: Theme.of(context).colorScheme.primary,
-          decoration: TextDecoration.underline,
         ),
       ),
     );
@@ -806,14 +784,6 @@ class _FileMessage extends StatelessWidget {
       ),
     );
   }
-}
-
-Uri? _httpUri(String value) {
-  final uri = Uri.tryParse(value.trim());
-  if (uri == null || (uri.scheme != 'http' && uri.scheme != 'https')) {
-    return null;
-  }
-  return uri.host.isEmpty ? null : uri;
 }
 
 bool _isImageFile(String value) {

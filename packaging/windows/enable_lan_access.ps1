@@ -1,11 +1,17 @@
-param(
+﻿param(
     [string]$ProgramPath
 )
 
 $ErrorActionPreference = 'Stop'
 
 $program = if ([string]::IsNullOrWhiteSpace($ProgramPath)) {
-    Join-Path $PSScriptRoot 'lan_transfer.exe'
+    $namedProgram = Join-Path $PSScriptRoot '猛人快传.exe'
+    if (Test-Path -LiteralPath $namedProgram -PathType Leaf) {
+        $namedProgram
+    } else {
+        # Compatibility with older portable packages and raw Flutter builds.
+        Join-Path $PSScriptRoot 'lan_transfer.exe'
+    }
 } else {
     $ProgramPath
 }

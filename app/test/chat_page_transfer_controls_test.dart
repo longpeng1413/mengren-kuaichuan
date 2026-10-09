@@ -5,11 +5,57 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:lan_transfer/src/app.dart' show remoteFileDeliveryWindow;
 import 'package:lan_transfer/src/chat/chat_message.dart';
 import 'package:lan_transfer/src/chat/chat_page.dart';
+import 'package:lan_transfer/src/chat/chat_text_message.dart';
 import 'package:lan_transfer/src/discovery/discovered_device.dart';
 import 'package:lan_transfer/src/transfer/transfer_models.dart';
 import 'package:lan_transfer/src/transfer/transfer_client.dart';
 
 void main() {
+  testWidgets('incoming and outgoing links use selectable chat content', (
+    tester,
+  ) async {
+    final messages = ValueNotifier<List<ChatMessage>>([
+      for (final outgoing in [false, true])
+        ChatMessage(
+          id: 'message-$outgoing',
+          peerId: 'phone',
+          peerName: '手机',
+          senderId: outgoing ? 'computer' : 'phone',
+          senderName: '测试设备',
+          kind: ChatMessageKind.text,
+          sentAt: DateTime(2026, 10, 10),
+          isOutgoing: outgoing,
+          text: 'https://example.com/$outgoing',
+        ),
+    ]);
+    final incoming = ValueNotifier<TransferProgressUpdate?>(null);
+    addTearDown(messages.dispose);
+    addTearDown(incoming.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ChatPage(
+          device: DiscoveredDevice(
+            deviceId: 'phone',
+            displayName: '手机',
+            platform: 'android',
+            address: InternetAddress.loopbackIPv4,
+            transferPort: 53318,
+            lastSeen: DateTime(2026, 10, 10),
+          ),
+          messages: messages,
+          incomingProgress: incoming,
+          onSendText: (_) async {},
+          onSendFiles: (_, _, _) async {},
+          onClearConversation: (_) async {},
+          onRemoveDevice: () async {},
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byType(ChatTextMessage), findsNWidgets(2));
+    expect(find.byType(SelectableText), findsNWidgets(2));
+  });
+
   test('remote file pipeline covers long-haul acknowledgement latency', () {
     expect(remoteFileDeliveryWindow, greaterThanOrEqualTo(16));
   });

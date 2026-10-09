@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$OutputDirectory,
     [string]$PackageSuffix,
     [switch]$SkipBuild
@@ -34,16 +34,19 @@ $suffix = if ([string]::IsNullOrWhiteSpace($PackageSuffix)) {
 } else {
     '-' + $PackageSuffix.Trim().TrimStart('-')
 }
-$packageName = "mengren-transfer-windows-x64-v$versionName$suffix"
+$packageName = "猛人快传-windows-x64-v$versionName$suffix"
 $staging = Join-Path $OutputDirectory $packageName
 $archive = Join-Path $OutputDirectory "$packageName.zip"
 
-New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
-if (Test-Path -LiteralPath $staging) {
-    Remove-Item -LiteralPath $staging -Recurse -Force
+if ((Test-Path -LiteralPath $staging) -or (Test-Path -LiteralPath $archive)) {
+    throw "Package already exists; use a new PackageSuffix to preserve it: $packageName"
 }
+New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 New-Item -ItemType Directory -Path $staging | Out-Null
 Copy-Item -Path (Join-Path $source '*') -Destination $staging -Recurse -Force
+# Keep Flutter's internal build target ASCII; expose the product name in the
+# portable package. Runtime startup uses Platform.resolvedExecutable.
+Rename-Item -LiteralPath (Join-Path $staging 'lan_transfer.exe') -NewName '猛人快传.exe'
 Copy-Item `
     -Path (Join-Path $projectRoot 'packaging\windows\enable_lan_access.*') `
     -Destination $staging `
@@ -57,9 +60,6 @@ if (Test-Path -LiteralPath $versionGuide -PathType Leaf) {
     Copy-Item -LiteralPath $versionGuide -Destination $staging
 }
 
-if (Test-Path -LiteralPath $archive) {
-    Remove-Item -LiteralPath $archive -Force
-}
 Compress-Archive -Path (Join-Path $staging '*') -DestinationPath $archive -CompressionLevel Optimal
 
 Get-FileHash -Algorithm SHA256 -LiteralPath $archive
