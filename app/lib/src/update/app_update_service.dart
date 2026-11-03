@@ -736,11 +736,18 @@ class AppUpdateService {
         throw const UpdateCancelledException();
       }
       await _diagnostics.log('update_download_failed', error: error);
+      // github.com downloads often need a proxy in mainland China.
       if (error is TimeoutException) {
-        throw const UpdateException('下载超过 60 秒没有进展，请检查网络后重试');
+        throw const UpdateException(
+          'GitHub 下载服务器长时间没有响应。国内访问 GitHub 常常需要代理：'
+          '请确认代理已开启后重试，或点“去网页手动下载”，也可以用电脑把安装包发到手机。',
+        );
       }
       if (error is SocketException || error is HttpException) {
-        throw const UpdateException('下载中断，请检查网络后重试');
+        throw const UpdateException(
+          '连不上 GitHub 下载服务器或下载中断。请确认代理已开启后重试，'
+          '或点“去网页手动下载”。',
+        );
       }
       if (error is HandshakeException) {
         throw const UpdateException('与下载服务器的安全连接失败，请检查网络或代理');
@@ -810,6 +817,10 @@ class AppUpdateService {
       ..idleTimeout = const Duration(seconds: 15)
       ..userAgent = 'MengrenKuaichuan/$appVersion';
     final proxy = await _systemProxy();
+    if (proxy != _loggedProxy) {
+      _loggedProxy = proxy;
+      await _diagnostics.log('update_network proxy=${proxy ?? 'none'}');
+    }
     client.findProxy = (uri) {
       final fromEnvironment = HttpClient.findProxyFromEnvironment(uri);
       if (fromEnvironment != 'DIRECT') return fromEnvironment;
@@ -818,10 +829,24 @@ class AppUpdateService {
     return client;
   }
 
-  /// Dart's HttpClient ignores the Windows proxy setting, but many users in
-  /// mainland China reach GitHub through a local proxy configured there.
+  String? _loggedProxy = '';
+
+  /// Dart's HttpClient ignores the system proxy on both Windows and Android,
+  /// but many users in mainland China can only reach github.com through a
+  /// local proxy (browsers use it, so downloads there are fast).
   Future<String?> _systemProxy() async {
-    if (!Platform.isWindows || allowInsecureHttpForTesting) return null;
+    if (allowInsecureHttpForTesting) return null;
+    if (Platform.isAndroid) {
+      try {
+        final proxy = await _updateChannel
+            .invokeMethod<String>('systemProxy')
+            .timeout(const Duration(seconds: 5));
+        return proxy == null || proxy.trim().isEmpty ? null : proxy.trim();
+      } catch (_) {
+        return null;
+      }
+    }
+    if (!Platform.isWindows) return null;
     try {
       const key =
           r'HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings';

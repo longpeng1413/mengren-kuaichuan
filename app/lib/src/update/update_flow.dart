@@ -149,6 +149,20 @@ class _UpdateProgressDialogState extends State<UpdateProgressDialog>
   int _total = 0;
   String? _message;
   File? _downloaded;
+  final Stopwatch _speedClock = Stopwatch()..start();
+  int _speedBaseBytes = 0;
+  double _bytesPerSecond = 0;
+
+  /// Averages over roughly one-second windows so the number does not flicker.
+  void _updateSpeed(int received) {
+    final elapsed = _speedClock.elapsedMilliseconds;
+    if (elapsed < 1000) return;
+    _bytesPerSecond = (received - _speedBaseBytes) * 1000 / elapsed;
+    _speedBaseBytes = received;
+    _speedClock
+      ..reset()
+      ..start();
+  }
 
   @override
   void initState() {
@@ -187,6 +201,7 @@ class _UpdateProgressDialogState extends State<UpdateProgressDialog>
         cancelToken: _cancelToken,
         onProgress: (received, total) {
           if (!mounted) return;
+          _updateSpeed(received);
           setState(() {
             _received = received;
             _total = total;
@@ -288,6 +303,7 @@ class _UpdateProgressDialogState extends State<UpdateProgressDialog>
           Text(
             _total > 0
                 ? '已下载 ${formatUpdateBytes(_received)} / ${formatUpdateBytes(_total)}'
+                      '${_bytesPerSecond > 0 ? ' · ${formatUpdateBytes(_bytesPerSecond.round())}/s' : ''}'
                 : '正在连接 GitHub 并核对校验信息…',
           ),
           const SizedBox(height: 6),

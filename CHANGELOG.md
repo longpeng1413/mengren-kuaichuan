@@ -6,6 +6,13 @@
 
 - 暂无。
 
+## v1.8.4+31 — 2026-11-04
+
+- 修复手机端一键更新下载不动（用户实测）：诊断日志显示版本查询正常（`api.github.com` 国内可直连），但下载第一次等 30 秒没收到响应、第二次 `SocketException: HTTP connection timed out … host: github.com, port: 443`；用户手机一直开着代理，浏览器跳转 GitHub 下载很快。原因是 Dart 的 `HttpClient` 不读 Android 系统代理，电脑端早已读取 Windows 系统代理，手机端漏了。本机不走代理实测直连 GitHub 下载约 40 KB/s 或卡住，国内常用镜像同样不可用。
+- Android 新增 `update` 通道方法 `systemProxy`：读取 `ConnectivityManager.getDefaultProxy()`（Wi-Fi 代理、代理软件发布的系统代理），取不到时读 `https/http.proxyHost/Port`；下载和检查都改为经该代理连接（不通时仍会尝试直连）。诊断日志新增 `update_network proxy=…`。
+- 更新进度显示下载速度；下载超时/连不上 GitHub 时提示确认代理已开启，并可去网页手动下载或用电脑把安装包发到手机（原文案「超过 60 秒」与实际 30 秒等待不符）。
+- 手机上 v1.8.3 及更早版本没有此修复，需要手动安装一次 v1.8.4。另编译了 versionCode 30 的「更新测试版」用于实测（不发布）。
+
 ## v1.8.3+30 — 2026-11-03
 
 - 设置页底部图标下方改为「作者 longpeng1413」和项目主页按钮（`github.com/longpeng1413/mengren-kuaichuan`，用 `url_launcher` 在浏览器打开）；作者名放在 `app_version.dart` 的 `appAuthor`。

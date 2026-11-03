@@ -6,6 +6,7 @@ import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageInstaller
+import android.net.ConnectivityManager
 import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.Build
@@ -138,6 +139,7 @@ class MainActivity : FlutterActivity() {
                         result.success(null)
                     }
                     "installApk" -> installApk(call.argument<String>("path"), result)
+                    "systemProxy" -> result.success(currentSystemProxy())
                     else -> result.notImplemented()
                 }
             }
@@ -564,6 +566,27 @@ class MainActivity : FlutterActivity() {
 
     private fun canInstallPackages(): Boolean =
         Build.VERSION.SDK_INT < Build.VERSION_CODES.O || packageManager.canRequestPackageInstalls()
+
+    /**
+     * The HTTP proxy browsers use: the Wi-Fi proxy or the one a proxy app
+     * (for example Clash's "system proxy") publishes. Dart's HttpClient does
+     * not read it, so the updater asks here. Returns "host:port" or null.
+     */
+    private fun currentSystemProxy(): String? {
+        try {
+            val connectivity = getSystemService(ConnectivityManager::class.java)
+            val info = connectivity?.defaultProxy
+            if (info != null && !info.host.isNullOrBlank() && info.port in 1..65535) {
+                return "${info.host}:${info.port}"
+            }
+        } catch (_: Exception) {
+        }
+        // Android keeps these process properties in sync with the global proxy.
+        val host = System.getProperty("https.proxyHost") ?: System.getProperty("http.proxyHost")
+        val port = (System.getProperty("https.proxyPort") ?: System.getProperty("http.proxyPort"))
+            ?.toIntOrNull()
+        return if (!host.isNullOrBlank() && port != null && port in 1..65535) "$host:$port" else null
+    }
 
     private fun openInstallPermissionSettings() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
