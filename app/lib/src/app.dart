@@ -25,6 +25,8 @@ import 'storage/received_file_service.dart';
 import 'transfer/transfer_client.dart';
 import 'transfer/transfer_models.dart';
 import 'transfer/transfer_server.dart';
+import 'ui/app_theme.dart';
+import 'ui/device_home_view.dart';
 import 'update/app_update_service.dart';
 import 'update/update_flow.dart';
 
@@ -87,19 +89,10 @@ class _LanTransferAppState extends State<LanTransferApp> {
     return MaterialApp(
       title: appVersionLabel,
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: _settings.themeColor.seedColor,
-          brightness: Brightness.light,
-        ),
-        useMaterial3: true,
-      ),
-      darkTheme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: _settings.themeColor.seedColor,
-          brightness: Brightness.dark,
-        ),
-        useMaterial3: true,
+      theme: buildAppTheme(_settings.themeColor.seedColor, Brightness.light),
+      darkTheme: buildAppTheme(
+        _settings.themeColor.seedColor,
+        Brightness.dark,
       ),
       themeMode: _settings.themeMode.materialMode,
       home: DeviceListPage(
@@ -1749,124 +1742,23 @@ class _DeviceListPageState extends State<DeviceListPage>
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text(appVersionLabel),
-        actions: [
-          IconButton(
-            tooltip: '设置',
-            onPressed: _openSettings,
-            icon: const Icon(Icons.settings_outlined),
-          ),
-          IconButton(
-            tooltip: '二维码 / 手动连接',
-            onPressed: _openPairingPage,
-            icon: const Icon(Icons.qr_code_2),
-          ),
-          IconButton(
-            tooltip: '立即重新发现',
-            onPressed: _discovery.announce,
-            icon: const Icon(Icons.refresh),
-          ),
-        ],
-      ),
-      body: Column(
-        children: [
-          _IdentityCard(identity: widget.identity, onRename: _renameDevice),
-          if (_statusError != null)
-            MaterialBanner(
-              content: Text(_statusError!),
-              actions: [
-                TextButton(
-                  onPressed: () => setState(() => _statusError = null),
-                  child: const Text('知道了'),
-                ),
-              ],
-            ),
-          if (_remoteError != null)
-            MaterialBanner(
-              leading: const Icon(Icons.cloud_off_outlined),
-              content: Text(_remoteError!),
-              actions: [
-                TextButton(
-                  onPressed: _connectRemoteRelay,
-                  child: const Text('立即重试'),
-                ),
-                TextButton(
-                  onPressed: () => setState(() => _remoteError = null),
-                  child: const Text('知道了'),
-                ),
-              ],
-            ),
-          if (widget.remoteSettings.enabled)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: ListTile(
-                dense: true,
-                contentPadding: EdgeInsets.zero,
-                leading: Icon(
-                  _remoteStatus == RemoteRelayStatus.connected
-                      ? Icons.cloud_done_outlined
-                      : Icons.cloud_sync_outlined,
-                ),
-                title: Text(
-                  _remoteStatus == RemoteRelayStatus.connected
-                      ? '公网 VPS 中转已连接'
-                      : '公网 VPS 中转正在连接',
-                ),
-                subtitle: const Text('局域网设备仍优先直连，不会绕行公网'),
-              ),
-            ),
-          if (_pendingSharedFiles.isNotEmpty)
-            MaterialBanner(
-              leading: const Icon(Icons.share_outlined),
-              content: Text(
-                '已从系统分享或“其他应用打开”接收 ${_pendingSharedFiles.length} 个文件，请点击一个设备发送',
-              ),
-              actions: [
-                TextButton(
-                  onPressed: _discardSharedFiles,
-                  child: const Text('取消发送'),
-                ),
-              ],
-            ),
-          Expanded(
-            child: _devices.isEmpty
-                ? _EmptyDevices(onPair: _openPairingPage)
-                : ListView.separated(
-                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
-                    itemCount: _devices.length,
-                    separatorBuilder: (_, _) => const SizedBox(height: 8),
-                    itemBuilder: (context, index) {
-                      final device = _devices[index];
-                      return Card(
-                        child: ListTile(
-                          leading: Icon(
-                            device.isRemote
-                                ? Icons.cloud_outlined
-                                : device.platform == 'android'
-                                ? Icons.smartphone
-                                : Icons.computer,
-                          ),
-                          title: Text(device.displayName),
-                          subtitle: Text(
-                            '${device.isRemote
-                                ? '远程 ${device.platform == 'android' ? 'Android' : 'Windows'}'
-                                : device.platform == 'android'
-                                ? 'Android'
-                                : 'Windows'}'
-                            ' · ${device.routeLabel}'
-                            ' · ${device.shortId} · 点击打开对话',
-                          ),
-                          trailing: const Icon(Icons.chevron_right),
-                          onTap: () => _openChat(device),
-                        ),
-                      );
-                    },
-                  ),
-          ),
-        ],
-      ),
+    return DeviceHomeView(
+      identity: widget.identity,
+      devices: _devices,
+      onRename: _renameDevice,
+      onOpenDevice: _openChat,
+      onPair: _openPairingPage,
+      onRefresh: _discovery.announce,
+      onOpenSettings: _openSettings,
+      remoteEnabled: widget.remoteSettings.enabled,
+      remoteConnected: _remoteStatus == RemoteRelayStatus.connected,
+      statusError: _statusError,
+      onDismissStatusError: () => setState(() => _statusError = null),
+      remoteError: _remoteError,
+      onRetryRemote: _connectRemoteRelay,
+      onDismissRemoteError: () => setState(() => _remoteError = null),
+      pendingSharedFileCount: _pendingSharedFiles.length,
+      onDiscardSharedFiles: _discardSharedFiles,
     );
   }
 }
@@ -2113,71 +2005,5 @@ class _RemoteIncomingFile {
     }
     final directory = partFile.parent;
     if (await directory.exists()) await directory.delete(recursive: true);
-  }
-}
-
-class _IdentityCard extends StatelessWidget {
-  const _IdentityCard({required this.identity, required this.onRename});
-
-  final DeviceIdentity identity;
-  final VoidCallback onRename;
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      margin: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-      child: ListTile(
-        leading: const CircleAvatar(child: Icon(Icons.wifi_tethering)),
-        title: Text(identity.displayName),
-        subtitle: Text('本机 · ${identity.shortId} · 正在局域网内广播'),
-        trailing: IconButton(
-          tooltip: '修改设备名称',
-          onPressed: onRename,
-          icon: const Icon(Icons.edit_outlined),
-        ),
-      ),
-    );
-  }
-}
-
-class _EmptyDevices extends StatelessWidget {
-  const _EmptyDevices({required this.onPair});
-
-  final VoidCallback onPair;
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              Icons.devices_other,
-              size: 64,
-              color: Theme.of(context).colorScheme.outline,
-            ),
-            const SizedBox(height: 16),
-            Text(
-              '正在查找同一局域网内的设备',
-              style: Theme.of(context).textTheme.titleMedium,
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              '同一子网会自动出现；跨路由网络请使用二维码或手动连接。',
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 18),
-            OutlinedButton.icon(
-              onPressed: onPair,
-              icon: const Icon(Icons.qr_code_2),
-              label: const Text('二维码 / 手动连接'),
-            ),
-          ],
-        ),
-      ),
-    );
   }
 }

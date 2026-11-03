@@ -1,7 +1,9 @@
 #include <flutter/dart_project.h>
 #include <flutter/flutter_view_controller.h>
+#include <flutter_windows.h>
 #include <windows.h>
 
+#include <algorithm>
 #include <cwchar>
 #include <iterator>
 
@@ -10,7 +12,7 @@
 
 namespace {
 
-constexpr wchar_t kWindowTitle[] = L"\u731B\u4EBA\u5FEB\u4F20 v1.8.0";
+constexpr wchar_t kWindowTitle[] = L"\u731B\u4EBA\u5FEB\u4F20 v1.8.1";
 constexpr wchar_t kWindowTitlePrefix[] = L"\u731B\u4EBA\u5FEB\u4F20 v";
 constexpr wchar_t kSingleInstanceMutex[] =
     L"Local\\MengrenLanTransfer.SingleInstance";
@@ -41,6 +43,39 @@ void RestoreExistingWindow(HWND window) {
   ::ShowWindowAsync(window, SW_RESTORE);
   ::ShowWindowAsync(window, SW_SHOW);
   ::SetForegroundWindow(window);
+}
+
+// A compact, phone-like window: the device list and chats need little width.
+constexpr unsigned int kWindowWidth = 500;
+constexpr unsigned int kWindowHeight = 760;
+
+// Centres the window on the primary monitor's work area and shrinks it on
+// small screens. Win32Window::Create takes logical (96 DPI) coordinates.
+void CenterOnPrimaryMonitor(Win32Window::Point& origin,
+                            Win32Window::Size& size) {
+  HMONITOR monitor = ::MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY);
+  MONITORINFO info{};
+  info.cbSize = sizeof(info);
+  if (monitor == nullptr || !::GetMonitorInfoW(monitor, &info)) {
+    return;
+  }
+  const double scale = FlutterDesktopGetDpiForMonitor(monitor) / 96.0;
+  const double work_left = info.rcWork.left / scale;
+  const double work_top = info.rcWork.top / scale;
+  const double work_width = (info.rcWork.right - info.rcWork.left) / scale;
+  const double work_height = (info.rcWork.bottom - info.rcWork.top) / scale;
+  const double width = (std::min)(static_cast<double>(size.width),
+                                  work_width - 40);
+  const double height = (std::min)(static_cast<double>(size.height),
+                                   work_height - 40);
+  if (width < 200 || height < 200) {
+    return;
+  }
+  size = Win32Window::Size(static_cast<unsigned int>(width),
+                           static_cast<unsigned int>(height));
+  origin = Win32Window::Point(
+      static_cast<unsigned int>(work_left + (work_width - width) / 2),
+      static_cast<unsigned int>(work_top + (work_height - height) / 2));
 }
 
 }  // namespace
@@ -83,7 +118,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
 
   FlutterWindow window(project);
   Win32Window::Point origin(10, 10);
-  Win32Window::Size size(1280, 720);
+  Win32Window::Size size(kWindowWidth, kWindowHeight);
+  CenterOnPrimaryMonitor(origin, size);
   if (!window.Create(kWindowTitle, origin, size)) {
     if (single_instance != nullptr) {
       ::CloseHandle(single_instance);

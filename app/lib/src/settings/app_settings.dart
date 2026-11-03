@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 enum AppThemeColor {
+  ruby('宝石红', Color(0xFFB0283A)),
   green('墨绿', Color(0xFF176B5B)),
   blue('蓝色', Color(0xFF2962A3)),
   purple('紫色', Color(0xFF6E4AA5)),
@@ -32,7 +33,7 @@ enum AppThemeMode {
 
 class AppSettings {
   const AppSettings({
-    this.themeColor = AppThemeColor.green,
+    this.themeColor = AppThemeColor.ruby,
     this.themeMode = AppThemeMode.light,
     this.launchAtStartup = false,
     this.windowsSaveDirectory,
@@ -100,7 +101,7 @@ class AppSettingsStore {
       (candidate) => candidate.name == themeModeName,
     );
     return AppSettings(
-      themeColor: theme.isEmpty ? AppThemeColor.green : theme.first,
+      themeColor: theme.isEmpty ? AppThemeColor.ruby : theme.first,
       themeMode: themeMode.isEmpty ? AppThemeMode.light : themeMode.first,
       launchAtStartup: preferences.getBool(_startupKey) ?? false,
       windowsSaveDirectory: preferences.getString(_windowsDirectoryKey),

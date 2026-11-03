@@ -3,7 +3,7 @@
 本文件适用于整个项目。任何编程 AI 或自动化代理在修改代码前，必须按顺序完整阅读：
 
 1. `AI_HANDOFF.md`
-2. `docs/开发交接说明-v1.8.0.md`，再读 `docs/开发交接说明-v1.7.8.md`、`docs/开发交接说明-v1.7.7.md`（v1.7.5 文档保留为历史资料）
+2. `docs/开发交接说明-v1.8.1.md`、`docs/开发交接说明-v1.8.0.md`，再读 `docs/开发交接说明-v1.7.8.md`、`docs/开发交接说明-v1.7.7.md`（v1.7.5 文档保留为历史资料）
 3. `CHANGELOG.md`
 4. 与任务相关的源文件和测试
 
@@ -16,6 +16,7 @@
 
 ## 当前基线
 
+- 开发中版本：`1.8.1+28`，界面升级（小窗口居中、主界面/设置页/聊天页重新设计、宝石红默认强调色、Windows 微软雅黑）、`创建桌面快捷方式.cmd`、GitHub 附件改用拼音名；未发布前等用户看过界面确认。
 - 当前正式版：`1.8.0+27` / `v1.8.0`（2026-11-03 发布），新增检查更新与一键自动更新；用户已实测 Windows 一键更新（下载、替换、自动重启）通过。Android 一键更新尚未实机验证。
 - 上一个正式版：`1.7.8+26` / `v1.7.8`，功能代码与 rc.2 相同，只更换了图标（红宝石配色，源图 `app/assets/icon/mengren_icon.png`）。
 - 上一个修复候选版：`1.7.7+25` / `v1.7.7-rc.2`；用户已确认本轮交互修复可用，且上次 Windows 后台卡死修复已连续使用几天正常。历史 rc.1 保留。
@@ -24,7 +25,7 @@
 - 本机 `dist` 只保留最新正式版（2026-11-03 起），桌面快捷方式指向 `dist\猛人快传-windows-x64-v1.8.0\猛人快传.exe`，该路径已有防火墙放行规则；以后用一键更新原地升级，文件夹名不变。
 - 配对协议：`protocolVersion = 2`
 - 公网协议：`protocolVersion = 3`，与局域网协议独立；发送成功必须收到接收端处理确认
-- 测试数量：应用 74 项（含 11 项 UDP socket 回归、8 项文本选择复制回归、16 项更新回归；另有 1 项需 `MENGREN_LIVE_UPDATE_TEST=1` 手动运行的真实 GitHub 更新测试）、远程协议 5 项、中转服务 7 项
+- 测试数量：应用 77 项（含 11 项 UDP socket 回归、8 项文本选择复制回归、17 项更新回归、2 项主界面回归；另有 1 项需 `MENGREN_LIVE_UPDATE_TEST=1` 手动运行的真实 GitHub 更新测试）、远程协议 5 项、中转服务 7 项
 - Windows 隐藏到托盘后必须保持 UDP 监听、公告、新设备发现和已知设备单播保活；不得复用 Android 的后台暂停策略。新增设备回归必须同时验证已有设备仍被保活。
 - UDP 发现：53317
 - TCP/HTTP/WebSocket：53318
@@ -35,7 +36,7 @@
 ## 自动更新规则（v1.8.0 起）
 
 - 客户端只读取 `longpeng1413/mengren-kuaichuan` 的 GitHub `releases/latest`：标签必须是 `vX.Y.Z` 正式版且高于当前版本；预发布、草稿和 `-rc` 标签不会推送给用户。
-- 发布附件文件名必须保持 `mengren-transfer-android-vX.Y.Z.apk`、`mengren-transfer-windows-x64-vX.Y.Z.zip`、`SHA256SUMS-vX.Y.Z.txt`，否则已安装的版本找不到更新。
+- 从 v1.8.1 起发布附件文件名必须是 `mengren-kuaichuan-android-vX.Y.Z.apk`、`mengren-kuaichuan-windows-x64-vX.Y.Z.zip`、`SHA256SUMS-vX.Y.Z.txt`（与仓库名一致；GitHub 会把中文文件名改成点号，所以不能用中文）。v1.8.0 客户端只认旧名 `mengren-transfer-…`，但在找不到时会退回「该 Release 中唯一的 .apk / 唯一含 windows 的 .zip」，所以每个 Release 里每个平台只能有一个安装包。客户端同时认新旧两种名字。
 - Windows ZIP 根目录必须直接包含 `猛人快传.exe` 和 `data/app.so`（`scripts/package_windows.ps1` 已保证）。
 - 发布正式 Release 即等于向所有已安装用户推送更新：必须先完成验证并经用户确认；APK 必须使用原签名。
 - 不要更改 `update_cache` 的位置或启动清理逻辑而不同步测试；不要让自动检查上传任何用户数据。
@@ -49,6 +50,8 @@
 - 使用 `scripts/flutter.ps1`，因为原项目路径包含中文；运行时确保 `L:` 未被占用。
 - 修改配对、传输或取消协议时，必须同时修改 Android/Windows 共用代码和集成测试。
 - 优先修复稳定性，不要在实机回归完成前扩展无关功能。
+- 界面统一用 `app/lib/src/ui/app_theme.dart` 的主题；主界面布局在 `app/lib/src/ui/device_home_view.dart`（纯展示组件，状态仍在 `DeviceListPage`）。Windows 默认窗口尺寸和居中逻辑在 `app/windows/runner/main.cpp`，最小尺寸在 `desktop_tray_service.dart`。
+- Windows 便携包不做安装程序（用户 2026-11-03 决定）；包内 `创建桌面快捷方式.cmd` + `create_desktop_shortcut.ps1` 负责建桌面快捷方式，源文件在 `packaging/windows/`。
 
 ## 必须执行的验证
 
@@ -71,7 +74,7 @@
 - `app/lib/src/app_version.dart`
 - `app/windows/runner/main.cpp`
 - `CHANGELOG.md`
-- 对应版本交接文档（当前 `docs/开发交接说明-v1.8.0.md`）
+- 对应版本交接文档（当前 `docs/开发交接说明-v1.8.1.md`）
 - 安装测试说明和最终安装包文件名
 
 完成工作后记录：问题原因、修改文件、验证结果、未实机验证部分和新安装包 SHA-256。

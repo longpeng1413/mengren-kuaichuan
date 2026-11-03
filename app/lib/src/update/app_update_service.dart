@@ -280,12 +280,22 @@ UpdateAsset? _pickInstaller(
   String version,
   UpdatePlatform platform,
 ) {
-  final exactName = switch (platform) {
-    UpdatePlatform.android => 'mengren-transfer-android-v$version.apk',
-    UpdatePlatform.windows => 'mengren-transfer-windows-x64-v$version.zip',
+  // GitHub rewrites non-ASCII asset names, so releases use the pinyin repo
+  // name from v1.8.1; releases up to v1.8.0 used `mengren-transfer`.
+  final exactNames = switch (platform) {
+    UpdatePlatform.android => [
+      'mengren-kuaichuan-android-v$version.apk',
+      'mengren-transfer-android-v$version.apk',
+    ],
+    UpdatePlatform.windows => [
+      'mengren-kuaichuan-windows-x64-v$version.zip',
+      'mengren-transfer-windows-x64-v$version.zip',
+    ],
   };
-  final exact = assets.where((asset) => asset.name == exactName).firstOrNull;
-  if (exact != null) return exact;
+  for (final exactName in exactNames) {
+    final exact = assets.where((asset) => asset.name == exactName).firstOrNull;
+    if (exact != null) return exact;
+  }
   final fallback = assets.where((asset) {
     final name = asset.name.toLowerCase();
     return switch (platform) {

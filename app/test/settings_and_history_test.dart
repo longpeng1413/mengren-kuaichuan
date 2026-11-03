@@ -79,6 +79,8 @@ void main() {
       250,
       scrollable: find.byType(Scrollable),
     );
+    await tester.ensureVisible(find.text('已启用 VPS 中转'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('已启用 VPS 中转'));
     await tester.pumpAndSettle();
 
@@ -188,6 +190,8 @@ void main() {
       scrollable: find.byType(Scrollable),
     );
     expect(find.text('已移除测试手机'), findsOneWidget);
+    await tester.ensureVisible(row);
+    await tester.pumpAndSettle();
     await tester.tap(find.descendant(of: row, matching: find.text('恢复')));
     await tester.pumpAndSettle();
 
@@ -234,13 +238,17 @@ void main() {
       scrollable: find.byType(Scrollable),
     );
     expect(find.text('传输时始终显示实际网络路线'), findsOneWidget);
+    // Help entries start collapsed and open on tap.
+    expect(find.textContaining('并不表示本次扫描了二维码'), findsNothing);
+    await tester.tap(find.text('传输时始终显示实际网络路线'));
+    await tester.pumpAndSettle();
     expect(find.textContaining('并不表示本次扫描了二维码'), findsOneWidget);
     await tester.scrollUntilVisible(
-      find.text('连接与高速传输'),
+      find.text('连接注意事项'),
       260,
       scrollable: find.byType(Scrollable),
     );
-    expect(find.text('连接与高速传输'), findsOneWidget);
+    expect(find.text('使用帮助'), findsOneWidget);
     expect(find.text('手机热点互传'), findsOneWidget);
     expect(find.text('大文件请使用 5 GHz 热点'), findsOneWidget);
     expect(find.text('连接注意事项'), findsOneWidget);

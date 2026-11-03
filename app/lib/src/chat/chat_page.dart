@@ -365,15 +365,51 @@ class _ChatPageState extends State<ChatPage> {
         : (_sentBytes / _totalBytes).clamp(0.0, 1.0);
     return Scaffold(
       appBar: AppBar(
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        titleSpacing: 4,
+        title: Row(
           children: [
-            Text(widget.device.displayName),
-            Text(
-              widget.device.isRemote
-                  ? '公网 VPS 中转 · 单文件 ≤ 200 MiB · 可随时停止'
-                  : widget.device.routeLabel,
-              style: Theme.of(context).textTheme.labelSmall,
+            Container(
+              width: 36,
+              height: 36,
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.primaryContainer,
+                borderRadius: BorderRadius.circular(11),
+              ),
+              child: Icon(
+                widget.device.isRemote
+                    ? Icons.cloud_outlined
+                    : widget.device.platform == 'android'
+                    ? Icons.smartphone_rounded
+                    : Icons.laptop_windows_rounded,
+                size: 20,
+                color: Theme.of(context).colorScheme.onPrimaryContainer,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    widget.device.displayName,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  Text(
+                    widget.device.isRemote
+                        ? '公网 VPS 中转 · 单文件 ≤ 200 MiB · 可随时停止'
+                        : widget.device.routeLabel,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
             ),
           ],
         ),
@@ -432,10 +468,47 @@ class _ChatPageState extends State<ChatPage> {
                       valueListenable: widget.messages,
                       builder: (context, messages, _) {
                         if (messages.isEmpty) {
-                          return const Center(
-                            child: Text(
-                              '还没有消息\n可以发送文字、链接、图片、视频或文件\nWindows 也可以把文件拖到这里',
-                              textAlign: TextAlign.center,
+                          final theme = Theme.of(context);
+                          return Center(
+                            child: Padding(
+                              padding: const EdgeInsets.all(32),
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Container(
+                                    width: 72,
+                                    height: 72,
+                                    decoration: BoxDecoration(
+                                      color: theme.colorScheme.primaryContainer
+                                          .withValues(alpha: 0.6),
+                                      shape: BoxShape.circle,
+                                    ),
+                                    child: Icon(
+                                      Icons.forum_outlined,
+                                      size: 32,
+                                      color: theme.colorScheme.primary,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 16),
+                                  Text(
+                                    '还没有消息',
+                                    style: theme.textTheme.titleSmall?.copyWith(
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 6),
+                                  Text(
+                                    Platform.isWindows
+                                        ? '可以发送文字、链接、图片、视频或文件\n也可以把文件直接拖到这里'
+                                        : '可以发送文字、链接、图片、视频或文件',
+                                    textAlign: TextAlign.center,
+                                    style: theme.textTheme.bodySmall?.copyWith(
+                                      color: theme.colorScheme.onSurfaceVariant,
+                                      height: 1.6,
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
                           );
                         }
@@ -451,11 +524,11 @@ class _ChatPageState extends State<ChatPage> {
                   ),
                   const Divider(height: 1),
                   Padding(
-                    padding: const EdgeInsets.fromLTRB(8, 7, 8, 8),
+                    padding: const EdgeInsets.fromLTRB(10, 10, 10, 10),
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
-                        IconButton(
+                        IconButton.filledTonal(
                           tooltip: '发送图片、视频或文件',
                           onPressed: _busy ? null : () => _sendFiles(),
                           icon: const Icon(Icons.attach_file),
@@ -494,11 +567,30 @@ class _ChatPageState extends State<ChatPage> {
                                 onSubmitted: Platform.isAndroid
                                     ? (_) => _sendText()
                                     : null,
-                                decoration: const InputDecoration(
-                                  hintText:
-                                      '输入文字或粘贴链接（Enter 发送，Shift+Enter 换行）',
-                                  border: OutlineInputBorder(),
+                                decoration: InputDecoration(
+                                  hintText: Platform.isAndroid
+                                      ? '输入文字或粘贴链接'
+                                      : '输入文字或链接，Enter 发送',
                                   isDense: true,
+                                  border: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(22),
+                                    borderSide: BorderSide.none,
+                                  ),
+                                  enabledBorder: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(22),
+                                    borderSide: BorderSide.none,
+                                  ),
+                                  focusedBorder: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(22),
+                                    borderSide: BorderSide(
+                                      color: Theme.of(context).colorScheme.primary,
+                                      width: 1.5,
+                                    ),
+                                  ),
+                                  contentPadding: const EdgeInsets.symmetric(
+                                    horizontal: 16,
+                                    vertical: 11,
+                                  ),
                                 ),
                               ),
                             ),
@@ -659,8 +751,16 @@ class _MessageBubble extends StatelessWidget {
         decoration: BoxDecoration(
           color: outgoing
               ? colors.primaryContainer
-              : colors.surfaceContainerHighest,
-          borderRadius: BorderRadius.circular(14),
+              : colors.surfaceContainerLowest,
+          border: outgoing
+              ? null
+              : Border.all(color: colors.outlineVariant.withValues(alpha: 0.7)),
+          borderRadius: BorderRadius.only(
+            topLeft: const Radius.circular(16),
+            topRight: const Radius.circular(16),
+            bottomLeft: Radius.circular(outgoing ? 16 : 4),
+            bottomRight: Radius.circular(outgoing ? 4 : 16),
+          ),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,

@@ -20,6 +20,8 @@ class DesktopTrayService with WindowListener, TrayListener {
     windowManager.addListener(this);
     trayManager.addListener(this);
     await windowManager.setPreventClose(true);
+    // Narrower than this the device cards and chat input start to wrap badly.
+    await windowManager.setMinimumSize(const Size(380, 520));
     await trayManager.setIcon('assets/icon/mengren_tray.ico');
     await trayManager.setToolTip(appVersionLabel);
     await trayManager.setContextMenu(

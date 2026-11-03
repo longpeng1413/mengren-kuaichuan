@@ -51,6 +51,12 @@ Copy-Item `
     -Path (Join-Path $projectRoot 'packaging\windows\enable_lan_access.*') `
     -Destination $staging `
     -Force
+# Double-click helper that puts a desktop shortcut to this folder's EXE.
+Copy-Item `
+    -Path (Join-Path $projectRoot 'packaging\windows\*.cmd'), `
+        (Join-Path $projectRoot 'packaging\windows\create_desktop_shortcut.ps1') `
+    -Destination $staging `
+    -Force
 Copy-Item `
     -LiteralPath (Join-Path $projectRoot 'docs\猛人快传-安装测试说明.txt') `
     -Destination $staging `

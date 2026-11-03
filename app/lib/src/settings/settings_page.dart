@@ -411,276 +411,450 @@ class _SettingsPageState extends State<SettingsPage> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     final saveLocation = Platform.isAndroid
         ? _settings.androidSaveLabel
         : _settings.windowsSaveDirectory ?? 'Windows 下载/猛人快传';
+    final usesCustomLocation = Platform.isAndroid
+        ? _settings.usesCustomAndroidDirectory
+        : _settings.windowsSaveDirectory != null;
     return Scaffold(
       appBar: AppBar(title: const Text('设置')),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          Text('外观', style: Theme.of(context).textTheme.titleMedium),
-          const SizedBox(height: 10),
-          SegmentedButton<AppThemeMode>(
-            segments: AppThemeMode.values
-                .map(
-                  (mode) => ButtonSegment<AppThemeMode>(
-                    value: mode,
-                    label: Text(mode.label),
-                    icon: Icon(switch (mode) {
-                      AppThemeMode.light => Icons.light_mode_outlined,
-                      AppThemeMode.dark => Icons.dark_mode_outlined,
-                      AppThemeMode.system => Icons.brightness_auto_outlined,
-                    }),
-                  ),
-                )
-                .toList(),
-            selected: {_settings.themeMode},
-            onSelectionChanged: (selection) =>
-                _save(_settings.copyWith(themeMode: selection.first)),
-          ),
-          const SizedBox(height: 16),
-          Text('强调色', style: Theme.of(context).textTheme.labelLarge),
-          const SizedBox(height: 8),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: AppThemeColor.values
-                .map(
-                  (theme) => ChoiceChip(
-                    selected: _settings.themeColor == theme,
-                    avatar: CircleAvatar(backgroundColor: theme.seedColor),
-                    label: Text(theme.label),
-                    onSelected: (_) =>
-                        _save(_settings.copyWith(themeColor: theme)),
-                  ),
-                )
-                .toList(),
-          ),
-          const SizedBox(height: 22),
-          Text('常规', style: Theme.of(context).textTheme.titleMedium),
-          if (Platform.isWindows)
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              title: const Text('开机自启动'),
-              subtitle: const Text('登录 Windows 后自动启动猛人快传'),
-              value: _settings.launchAtStartup,
-              onChanged: _working ? null : _toggleStartup,
-            ),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.folder_outlined),
-            title: const Text('默认文件保存位置'),
-            subtitle: Text(saveLocation),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: _working ? null : _chooseDirectory,
-          ),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: TextButton(
-              onPressed: _working ? null : _useDefaultDirectory,
-              child: Text(
-                Platform.isAndroid ? '恢复为系统下载/猛人快传' : '恢复为 Windows 下载/猛人快传',
-              ),
-            ),
-          ),
-          if (AppUpdateService.isSupportedPlatform) ...[
-            const Divider(height: 32),
-            Text(
-              '软件更新',
-              key: const Key('update_section'),
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              title: const Text('自动检查更新'),
-              subtitle: const Text('每天最多检查一次；只向 GitHub 查询版本，不上传聊天或文件'),
-              value: _settings.autoCheckUpdates,
-              onChanged: (enabled) =>
-                  _save(_settings.copyWith(autoCheckUpdates: enabled)),
-            ),
-            ListTile(
-              key: const Key('check_update'),
-              contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.system_update_outlined),
-              title: const Text('检查更新'),
-              subtitle: const Text('当前 v$appVersion；发现新版本后可一键下载、校验并安装'),
-              trailing: _checkingUpdate
-                  ? const SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.chevron_right),
-              onTap: _checkingUpdate ? null : _checkForUpdate,
-            ),
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.cleaning_services_outlined),
-              title: const Text('清空更新缓存'),
-              subtitle: Text(
-                '当前 ${formatUpdateBytes(_updateCacheBytes)}；'
-                '下载的安装包和临时文件每次启动都会自动清理',
-              ),
-              onTap: _checkingUpdate ? null : _clearUpdateCache,
-            ),
-          ],
-          const Divider(height: 32),
-          Text('设备管理', style: Theme.of(context).textTheme.titleMedium),
-          ListTile(
-            key: const Key('removed_devices_summary'),
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.devices_other_outlined),
-            title: const Text('已移除设备'),
-            subtitle: Text(
-              _removedDevices.isEmpty
-                  ? '没有已移除设备；移除后可在这里恢复'
-                  : '共 ${_removedDevices.length} 台；恢复后会重新参与自动发现和连接',
-            ),
-          ),
-          if (_removedDevices.isNotEmpty) ...[
-            Card(
-              margin: EdgeInsets.zero,
-              child: Column(
+      body: Align(
+        alignment: Alignment.topCenter,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 640),
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 28),
+            children: [
+              _SettingsSection(
+                title: '外观',
                 children: [
-                  for (var index = 0; index < _removedDevices.length; index++)
-                    Column(
-                      mainAxisSize: MainAxisSize.min,
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
+                    child: Row(
                       children: [
-                        if (index > 0) const Divider(height: 1),
-                        ListTile(
-                          key: Key(
-                            'removed_device_${_removedDevices[index].deviceId}',
-                          ),
-                          title: Text(_removedDevices[index].label),
-                          subtitle: Text(
-                            '设备标识：${_removedDevices[index].shortId.toUpperCase()}',
-                          ),
-                          trailing: TextButton(
-                            onPressed: _working
-                                ? null
-                                : () => _restoreDevice(_removedDevices[index]),
-                            child: const Text('恢复'),
+                        Text('主题', style: theme.textTheme.bodyLarge),
+                        const Spacer(),
+                        SegmentedButton<AppThemeMode>(
+                          showSelectedIcon: false,
+                          segments: AppThemeMode.values
+                              .map(
+                                (mode) => ButtonSegment<AppThemeMode>(
+                                  value: mode,
+                                  label: Text(mode.label),
+                                ),
+                              )
+                              .toList(),
+                          selected: {_settings.themeMode},
+                          onSelectionChanged: (selection) => _save(
+                            _settings.copyWith(themeMode: selection.first),
                           ),
                         ),
                       ],
                     ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 14),
+                    child: Row(
+                      children: [
+                        Text('强调色', style: theme.textTheme.bodyLarge),
+                        const Spacer(),
+                        for (final color in AppThemeColor.values)
+                          _ColorDot(
+                            color: color,
+                            selected: _settings.themeColor == color,
+                            onTap: () =>
+                                _save(_settings.copyWith(themeColor: color)),
+                          ),
+                      ],
+                    ),
+                  ),
                 ],
               ),
-            ),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: TextButton.icon(
-                key: const Key('restore_all_removed_devices'),
-                onPressed: _working ? null : _restoreAllDevices,
-                icon: const Icon(Icons.restore),
-                label: const Text('恢复全部设备'),
+              _SettingsSection(
+                title: '常规',
+                children: [
+                  if (Platform.isWindows)
+                    _SettingsTile(
+                      icon: Icons.power_settings_new_rounded,
+                      title: '开机自启动',
+                      subtitle: '登录 Windows 后自动在托盘运行',
+                      trailing: Switch(
+                        value: _settings.launchAtStartup,
+                        onChanged: _working ? null : _toggleStartup,
+                      ),
+                    ),
+                  _SettingsTile(
+                    icon: Icons.folder_outlined,
+                    title: '文件保存位置',
+                    subtitle: saveLocation,
+                    trailing: usesCustomLocation
+                        ? TextButton(
+                            onPressed: _working ? null : _useDefaultDirectory,
+                            child: const Text('恢复默认'),
+                          )
+                        : const Icon(Icons.chevron_right),
+                    onTap: _working ? null : _chooseDirectory,
+                  ),
+                ],
+              ),
+              if (AppUpdateService.isSupportedPlatform)
+                _SettingsSection(
+                  key: const Key('update_section'),
+                  title: '软件更新',
+                  children: [
+                    _SettingsTile(
+                      key: const Key('check_update'),
+                      icon: Icons.system_update_alt_rounded,
+                      title: '检查更新',
+                      subtitle: '当前 v$appVersion，有新版本时可一键安装',
+                      trailing: _checkingUpdate
+                          ? const SizedBox.square(
+                              dimension: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.chevron_right),
+                      onTap: _checkingUpdate ? null : _checkForUpdate,
+                    ),
+                    _SettingsTile(
+                      icon: Icons.update_rounded,
+                      title: '自动检查更新',
+                      subtitle: '每天最多一次，只向 GitHub 查询版本号',
+                      trailing: Switch(
+                        value: _settings.autoCheckUpdates,
+                        onChanged: (enabled) => _save(
+                          _settings.copyWith(autoCheckUpdates: enabled),
+                        ),
+                      ),
+                    ),
+                    _SettingsTile(
+                      icon: Icons.cleaning_services_outlined,
+                      title: '更新缓存',
+                      subtitle:
+                          '${formatUpdateBytes(_updateCacheBytes)} · 每次启动自动清理',
+                      trailing: TextButton(
+                        onPressed: _checkingUpdate || _updateCacheBytes == 0
+                            ? null
+                            : _clearUpdateCache,
+                        child: const Text('清空'),
+                      ),
+                    ),
+                  ],
+                ),
+              _SettingsSection(
+                title: '公网远程传输',
+                children: [
+                  _SettingsTile(
+                    icon: _remoteSettings.enabled
+                        ? Icons.cloud_done_outlined
+                        : Icons.cloud_off_outlined,
+                    title: _remoteSettings.enabled ? '已启用 VPS 中转' : '未启用 VPS 中转',
+                    subtitle: _remoteSettings.enabled
+                        ? '${_remoteSettings.relayUrl}\n密钥保存在系统安全存储中'
+                        : '默认只用局域网；配置自己的 VPS 后可跨网络发送',
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: _working ? null : _configureRemoteAccess,
+                  ),
+                ],
+              ),
+              _SettingsSection(
+                title: '设备管理',
+                children: [
+                  _SettingsTile(
+                    key: const Key('removed_devices_summary'),
+                    icon: Icons.devices_other_outlined,
+                    title: '已移除设备',
+                    subtitle: _removedDevices.isEmpty
+                        ? '没有已移除设备；移除后可在这里恢复'
+                        : '共 ${_removedDevices.length} 台；恢复后会重新参与自动发现和连接',
+                    trailing: _removedDevices.length > 1
+                        ? TextButton(
+                            key: const Key('restore_all_removed_devices'),
+                            onPressed: _working ? null : _restoreAllDevices,
+                            child: const Text('全部恢复'),
+                          )
+                        : null,
+                  ),
+                  for (final entry in _removedDevices)
+                    _SettingsTile(
+                      key: Key('removed_device_${entry.deviceId}'),
+                      indent: true,
+                      title: entry.label,
+                      subtitle: '设备标识：${entry.shortId.toUpperCase()}',
+                      trailing: TextButton(
+                        onPressed: _working ? null : () => _restoreDevice(entry),
+                        child: const Text('恢复'),
+                      ),
+                    ),
+                ],
+              ),
+              if (Platform.isAndroid || Platform.isWindows)
+                _SettingsSection(
+                  key: const Key('diagnostics_section'),
+                  title: '诊断',
+                  children: [
+                    _SettingsTile(
+                      icon: Icons.bug_report_outlined,
+                      title: '诊断日志',
+                      subtitle:
+                          '${_formatDiagnosticBytes(_diagnosticInfo?.bytes ?? 0)}'
+                          ' · 最多保留 2 份，7 天自动清理',
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: FilledButton.tonalIcon(
+                              onPressed: _working ? null : _exportDiagnostics,
+                              icon: const Icon(Icons.download_outlined),
+                              label: const Text('导出诊断日志'),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: OutlinedButton.icon(
+                              onPressed: _working ? null : _clearDiagnostics,
+                              icon: const Icon(Icons.delete_sweep_outlined),
+                              label: const Text('清除诊断日志'),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              _SettingsSection(
+                title: '使用帮助',
+                children: const [
+                  _HelpTile(
+                    icon: Icons.route_outlined,
+                    title: '传输时始终显示实际网络路线',
+                    body:
+                        '局域网会显示“局域网直连”或“局域网安全连接”；后者可由已保存的连接自动重连，'
+                        '并不表示本次扫描了二维码。跨地区时显示“公网 VPS 中转”。'
+                        '公网文件发送可随时点击停止，接收端会清理未完成文件。',
+                  ),
+                  _HelpTile(
+                    icon: Icons.wifi_tethering,
+                    title: '手机热点互传',
+                    body:
+                        '一台手机打开热点，另一台连接后，双方会自动出现在设备列表；'
+                        '未出现时使用二维码或手动 IP 连接。',
+                  ),
+                  _HelpTile(
+                    icon: Icons.speed_outlined,
+                    title: '大文件请使用 5 GHz 热点',
+                    body:
+                        '2.4 GHz 热点常见速度约 8 MiB/s；切换 5 GHz、关闭兼容模式并让设备靠近，'
+                        '可显著提速，实际速度取决于手机。',
+                  ),
+                  _HelpTile(
+                    icon: Icons.hub_outlined,
+                    title: '连接注意事项',
+                    body:
+                        '参与传输的设备应使用相同协议版本。Windows 首次使用需放行 UDP 53317 和 '
+                        'TCP 53318；连接异常时请导出诊断日志。',
+                  ),
+                ],
+              ),
+              const SizedBox(height: 22),
+              Center(
+                child: Column(
+                  children: [
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: Image.asset(
+                        'assets/icon/mengren_icon_small.png',
+                        width: 44,
+                        height: 44,
+                        cacheWidth: 144,
+                        errorBuilder: (_, _, _) => const SizedBox.shrink(),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(appVersionLabel, style: theme.textTheme.bodyMedium),
+                    const SizedBox(height: 2),
+                    Text(
+                      _remoteSettings.enabled
+                          ? '局域网优先；仅远程设备使用加密 VPS 中转'
+                          : '默认纯局域网传输，不经过公网服务器',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// A titled group of rows drawn as one rounded card.
+class _SettingsSection extends StatelessWidget {
+  const _SettingsSection({
+    required this.title,
+    required this.children,
+    super.key,
+  });
+
+  final String title;
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final rows = <Widget>[];
+    for (var index = 0; index < children.length; index++) {
+      if (index > 0) rows.add(const Divider(indent: 16, endIndent: 16));
+      rows.add(children[index]);
+    }
+    return Padding(
+      padding: const EdgeInsets.only(top: 18),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(6, 0, 6, 8),
+            child: Text(
+              title,
+              style: theme.textTheme.labelLarge?.copyWith(
+                color: theme.colorScheme.primary,
+                fontWeight: FontWeight.w600,
               ),
             ),
-          ],
-          if (Platform.isAndroid || Platform.isWindows) ...[
-            const Divider(height: 32),
-            Text(
-              '诊断',
-              key: const Key('diagnostics_section'),
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-            const SizedBox(height: 4),
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.bug_report_outlined),
-              title: const Text('导出诊断日志'),
-              subtitle: Text(
-                '当前 ${_formatDiagnosticBytes(_diagnosticInfo?.bytes ?? 0)}；'
-                '单份最多 1 MB，仅保留当前和上一份，7 天自动清理',
+          ),
+          Card(child: Column(children: rows)),
+        ],
+      ),
+    );
+  }
+}
+
+class _SettingsTile extends StatelessWidget {
+  const _SettingsTile({
+    required this.title,
+    this.icon,
+    this.subtitle,
+    this.trailing,
+    this.onTap,
+    this.indent = false,
+    super.key,
+  });
+
+  final IconData? icon;
+  final String title;
+  final String? subtitle;
+  final Widget? trailing;
+  final VoidCallback? onTap;
+  final bool indent;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return ListTile(
+      contentPadding: EdgeInsets.fromLTRB(indent ? 68 : 16, 2, 12, 2),
+      leading: icon == null
+          ? null
+          : Container(
+              width: 36,
+              height: 36,
+              decoration: BoxDecoration(
+                color: colors.primaryContainer,
+                borderRadius: BorderRadius.circular(10),
               ),
-              trailing: const Icon(Icons.download_outlined),
-              onTap: _working ? null : _exportDiagnostics,
+              child: Icon(icon, size: 20, color: colors.onPrimaryContainer),
             ),
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.delete_sweep_outlined),
-              title: const Text('清除诊断日志'),
-              subtitle: const Text('只删除运行日志，不影响聊天记录和已接收文件'),
-              onTap: _working ? null : _clearDiagnostics,
-            ),
-          ],
-          const Divider(height: 32),
-          Text('公网远程传输', style: Theme.of(context).textTheme.titleMedium),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: Icon(
-              _remoteSettings.enabled
-                  ? Icons.cloud_done_outlined
-                  : Icons.cloud_off_outlined,
-            ),
-            title: Text(_remoteSettings.enabled ? '已启用 VPS 中转' : '未启用 VPS 中转'),
-            subtitle: Text(
-              _remoteSettings.enabled
-                  ? '${_remoteSettings.relayUrl}\n密钥保存在系统安全存储中'
-                  : '默认只使用局域网；配置 VPS 后可远程发送文字、链接和 200 MiB 内文件',
-            ),
-            isThreeLine: _remoteSettings.enabled,
-            trailing: const Icon(Icons.chevron_right),
-            onTap: _working ? null : _configureRemoteAccess,
-          ),
-          const Card(
-            margin: EdgeInsets.zero,
-            child: ListTile(
-              leading: Icon(Icons.route_outlined),
-              title: Text('传输时始终显示实际网络路线'),
-              subtitle: Text(
-                '局域网会显示“局域网直连”或“局域网安全连接”；后者可由已保存的连接自动重连，'
-                '并不表示本次扫描了二维码。跨地区时显示“公网 VPS 中转”。'
-                '公网文件发送可随时点击停止，接收端会清理未完成文件。',
-              ),
-            ),
-          ),
-          const Divider(height: 32),
-          Text('连接与高速传输', style: Theme.of(context).textTheme.titleMedium),
-          const SizedBox(height: 8),
-          const Card(
-            margin: EdgeInsets.zero,
-            child: Column(
-              children: [
-                ListTile(
-                  leading: Icon(Icons.wifi_tethering),
-                  title: Text('手机热点互传'),
-                  subtitle: Text(
-                    '一台手机打开热点，另一台连接后，双方会自动出现在设备列表；未出现时使用二维码或手动 IP 连接。',
-                  ),
-                ),
-                Divider(height: 1),
-                ListTile(
-                  leading: Icon(Icons.speed_outlined),
-                  title: Text('大文件请使用 5 GHz 热点'),
-                  subtitle: Text(
-                    '2.4 GHz 热点常见速度约 8 MiB/s；切换 5 GHz、关闭兼容模式并让设备靠近，可显著提速，实际速度取决于手机。',
-                  ),
-                ),
-                Divider(height: 1),
-                ListTile(
-                  leading: Icon(Icons.hub_outlined),
-                  title: Text('连接注意事项'),
-                  subtitle: Text(
-                    '参与传输的设备应使用相同协议版本。Windows 首次使用需放行 UDP 53317 和 TCP 53318；连接异常时请导出诊断日志。',
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 16),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.info_outline),
-            title: const Text(appVersionLabel),
-            subtitle: Text(
-              _remoteSettings.enabled
-                  ? '局域网优先；仅远程设备使用加密 VPS 中转'
-                  : '默认纯局域网传输，不经过公网服务器',
+      title: Text(title),
+      subtitle: subtitle == null ? null : Text(subtitle!),
+      trailing: trailing,
+      onTap: onTap,
+    );
+  }
+}
+
+class _HelpTile extends StatelessWidget {
+  const _HelpTile({required this.icon, required this.title, required this.body});
+
+  final IconData icon;
+  final String title;
+  final String body;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Theme(
+      // ExpansionTile draws its own borders when open; the card already
+      // separates rows.
+      data: theme.copyWith(dividerColor: Colors.transparent),
+      child: ExpansionTile(
+        leading: Icon(icon, size: 22),
+        title: Text(title, style: theme.listTileTheme.titleTextStyle),
+        childrenPadding: const EdgeInsets.fromLTRB(56, 0, 20, 14),
+        expandedAlignment: Alignment.centerLeft,
+        children: [
+          Text(
+            body,
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+              height: 1.55,
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _ColorDot extends StatelessWidget {
+  const _ColorDot({
+    required this.color,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final AppThemeColor color;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Tooltip(
+      message: color.label,
+      child: Padding(
+        padding: const EdgeInsets.only(left: 6),
+        child: InkResponse(
+          onTap: onTap,
+          radius: 20,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 160),
+            width: 30,
+            height: 30,
+            padding: const EdgeInsets.all(3),
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              border: Border.all(
+                color: selected ? colors.onSurface : Colors.transparent,
+                width: 2,
+              ),
+            ),
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: color.seedColor,
+                shape: BoxShape.circle,
+              ),
+              child: selected
+                  ? const Icon(Icons.check, size: 14, color: Colors.white)
+                  : null,
+            ),
+          ),
+        ),
       ),
     );
   }

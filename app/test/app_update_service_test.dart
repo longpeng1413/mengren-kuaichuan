@@ -44,6 +44,40 @@ void main() {
       );
     });
 
+    test('pinyin asset names from v1.8.1 are found, legacy names still work', () {
+      Map<String, Object?> asset(String name) => {
+        'name': name,
+        'size': 10,
+        'browser_download_url': 'https://example.com/$name',
+        'digest': 'sha256:${'b' * 64}',
+      };
+      String? picked(List<String> names, UpdatePlatform platform) {
+        final result = parseLatestRelease(
+          {
+            ..._release('v1.8.1'),
+            'assets': [for (final name in names) asset(name)],
+          },
+          currentVersion: '1.8.0',
+          platform: platform,
+        );
+        return result is UpdateFound ? result.update.asset.name : null;
+      }
+
+      const pinyinApk = 'mengren-kuaichuan-android-v1.8.1.apk';
+      const pinyinZip = 'mengren-kuaichuan-windows-x64-v1.8.1.zip';
+      expect(picked([pinyinApk, pinyinZip], UpdatePlatform.android), pinyinApk);
+      expect(picked([pinyinApk, pinyinZip], UpdatePlatform.windows), pinyinZip);
+      expect(
+        picked([
+          'mengren-transfer-android-v1.8.1.apk',
+          pinyinApk,
+        ], UpdatePlatform.android),
+        pinyinApk,
+      );
+      // A lone installer with an unexpected name is still picked.
+      expect(picked(['other.apk'], UpdatePlatform.android), 'other.apk');
+    });
+
     test('same, older, draft and pre-release releases are not offered', () {
       for (final release in [
         _release('v1.8.0'),
