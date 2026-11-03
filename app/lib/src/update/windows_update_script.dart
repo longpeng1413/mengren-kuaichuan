@@ -1,7 +1,8 @@
 /// Written into the update cache and run by Windows PowerShell 5.1.
 ///
-/// `extract` runs while the app is still open. `apply` is started detached:
-/// it waits for the app to exit, backs up every file it is about to replace,
+/// `extract` runs while the app is still open. `apply` is started as an
+/// independent hidden process (see `launchWindowsApply`): it signals that it
+/// started, waits for the app to exit, backs up every file it is about to replace,
 /// copies the new files over the install folder (other files are kept), rolls
 /// back on failure, records the outcome and restarts the app. Keep this
 /// script ASCII-only so PowerShell 5.1 reads it correctly without a BOM.
@@ -14,6 +15,7 @@ param(
   [string]$ExeName,
   [string]$Backup,
   [string]$ResultFile,
+  [string]$StartedFile,
   [string]$Version,
   [int]$ProcessId = 0,
   [int]$Retries = 10,
@@ -55,6 +57,11 @@ function Copy-WithRetry([string]$Source, [string]$Destination) {
       Start-Sleep -Milliseconds 500
     }
   }
+}
+
+# Tells the app the script is really running; only then does the app exit.
+if ($StartedFile) {
+  try { [System.IO.File]::WriteAllText($StartedFile, "$PID") } catch {}
 }
 
 try {

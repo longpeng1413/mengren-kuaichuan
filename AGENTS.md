@@ -23,7 +23,7 @@
 - 开发中候选版：`1.8.0+27`，新增检查更新与一键自动更新；尚未打标签、尚未发布，等用户实机确认。
 - 配对协议：`protocolVersion = 2`
 - 公网协议：`protocolVersion = 3`，与局域网协议独立；发送成功必须收到接收端处理确认
-- 测试数量：应用 72 项（含 11 项 UDP socket 回归、8 项文本选择复制回归、14 项更新回归；另有 1 项需 `MENGREN_LIVE_UPDATE_TEST=1` 手动运行的真实 GitHub 更新测试）、远程协议 5 项、中转服务 7 项
+- 测试数量：应用 74 项（含 11 项 UDP socket 回归、8 项文本选择复制回归、16 项更新回归；另有 1 项需 `MENGREN_LIVE_UPDATE_TEST=1` 手动运行的真实 GitHub 更新测试）、远程协议 5 项、中转服务 7 项
 - Windows 隐藏到托盘后必须保持 UDP 监听、公告、新设备发现和已知设备单播保活；不得复用 Android 的后台暂停策略。新增设备回归必须同时验证已有设备仍被保活。
 - UDP 发现：53317
 - TCP/HTTP/WebSocket：53318
@@ -38,6 +38,7 @@
 - Windows ZIP 根目录必须直接包含 `猛人快传.exe` 和 `data/app.so`（`scripts/package_windows.ps1` 已保证）。
 - 发布正式 Release 即等于向所有已安装用户推送更新：必须先完成验证并经用户确认；APK 必须使用原签名。
 - 不要更改 `update_cache` 的位置或启动清理逻辑而不同步测试；不要让自动检查上传任何用户数据。
+- Windows 替换脚本不要用 Dart 的 `ProcessStartMode.detached` 启动：PowerShell 5.1 在无控制台模式下会立刻退出、什么都不执行（2026-11-03 实测出过问题）。保持中转 `Start-Process` + 「已启动」标记的方式，并保留按真实启动方式运行的测试。
 
 ## 开发规则
 

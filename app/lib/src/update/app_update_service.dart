@@ -24,6 +24,34 @@ const _updateChannel = MethodChannel(
 );
 const _resultFileName = 'update_result.json';
 const _scriptFileName = 'apply_update.ps1';
+const _startedFileName = 'apply_started.txt';
+
+/// Quotes one argument the way Windows programs (CommandLineToArgvW) split
+/// a command line: backslashes are doubled only before a quote.
+String quoteWindowsArgument(String value) {
+  final buffer = StringBuffer('"');
+  var backslashes = 0;
+  for (final char in value.split('')) {
+    if (char == r'\') {
+      backslashes++;
+      continue;
+    }
+    if (char == '"') {
+      buffer
+        ..write(r'\' * (backslashes * 2 + 1))
+        ..write('"');
+    } else {
+      buffer
+        ..write(r'\' * backslashes)
+        ..write(char);
+    }
+    backslashes = 0;
+  }
+  buffer
+    ..write(r'\' * (backslashes * 2))
+    ..write('"');
+  return buffer.toString();
+}
 
 enum UpdatePlatform { android, windows }
 
@@ -931,6 +959,7 @@ class AppUpdateService {
         executableName: p.basename(executable.path),
         backup: Directory(p.join(directory.path, 'backup')),
         resultFile: File(p.join(directory.path, _resultFileName)),
+        startedFile: File(p.join(directory.path, _startedFileName)),
         version: update.version,
       );
     } catch (_) {
@@ -939,20 +968,53 @@ class AppUpdateService {
     }
   }
 
-  /// Starts the detached apply script. The caller must exit the app right
-  /// after; the script waits for this process to end before copying.
-  Future<void> launchWindowsApply(WindowsUpdatePlan plan) async {
+  /// Starts the apply script as an independent hidden process and waits until
+  /// it reports that it is running. The caller must exit the app right after;
+  /// the script waits for this process to end before copying.
+  ///
+  /// Windows PowerShell 5.1 started with ProcessStartMode.detached (no
+  /// console) exits at once without running anything, so a short-lived
+  /// PowerShell relays the launch through Start-Process instead.
+  Future<void> launchWindowsApply(
+    WindowsUpdatePlan plan, {
+    int? processId,
+    bool restart = true,
+    Duration startTimeout = const Duration(seconds: 15),
+  }) async {
     try {
-      await Process.start(
-        'powershell.exe',
-        plan.applyArguments(processId: pid),
-        mode: ProcessStartMode.detached,
-        workingDirectory: plan.staging.parent.path,
-      );
+      await _deleteQuietly(plan.startedFile);
+      await _deleteQuietly(plan.resultFile);
+      final argumentLine = plan
+          .applyArguments(processId: processId ?? pid, restart: restart)
+          .map(quoteWindowsArgument)
+          .join(' ')
+          .replaceAll("'", "''");
+      final relay = await Process.run('powershell.exe', [
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-Command',
+        "Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden "
+            "-WorkingDirectory '${plan.staging.parent.path.replaceAll("'", "''")}' "
+            "-ArgumentList '$argumentLine'",
+      ]).timeout(const Duration(seconds: 30));
+      if (relay.exitCode != 0) {
+        throw StateError(
+          'relay exit=${relay.exitCode} ${'${relay.stderr}'.trim()}',
+        );
+      }
+      final deadline = DateTime.now().add(startTimeout);
+      while (!await plan.startedFile.exists()) {
+        if (DateTime.now().isAfter(deadline)) {
+          throw StateError('apply script did not report start');
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      }
     } catch (error) {
       _busy = false;
       await _diagnostics.log('update_apply_launch_failed', error: error);
-      throw const UpdateException('无法启动更新程序，请手动下载更新');
+      throw const UpdateException('更新程序没能启动，猛人快传不会关闭；请去网页手动下载更新');
     }
     await _diagnostics.log('update_apply_launched version=${plan.version}');
   }
@@ -972,6 +1034,7 @@ class WindowsUpdatePlan {
     required this.executableName,
     required this.backup,
     required this.resultFile,
+    required this.startedFile,
     required this.version,
   });
 
@@ -981,6 +1044,7 @@ class WindowsUpdatePlan {
   final String executableName;
   final Directory backup;
   final File resultFile;
+  final File startedFile;
   final String version;
 
   List<String> applyArguments({
@@ -992,8 +1056,6 @@ class WindowsUpdatePlan {
     '-NonInteractive',
     '-ExecutionPolicy',
     'Bypass',
-    '-WindowStyle',
-    'Hidden',
     '-File',
     script.path,
     '-Mode',
@@ -1010,6 +1072,8 @@ class WindowsUpdatePlan {
     backup.path,
     '-ResultFile',
     resultFile.path,
+    '-StartedFile',
+    startedFile.path,
     '-Version',
     version,
     '-Retries',

@@ -267,7 +267,8 @@ void main() {
       ]);
       expect(compress.exitCode, 0, reason: '${compress.stderr}');
 
-      final target = Directory(p.join(root.path, '安装 目录'));
+      // Space, Chinese and an apostrophe all pass through the launch quoting.
+      final target = Directory(p.join(root.path, "Tom's 安装 目录"));
       _write(target, '猛人快传.exe', 'old exe');
       _write(target, p.join('data', 'app.so'), 'old so');
       _write(target, '用户笔记.txt', 'keep me');
@@ -346,6 +347,38 @@ void main() {
       },
       skip: Platform.isWindows ? false : 'Windows only',
     );
+
+    test(
+      'the real launch path runs the script as an independent process',
+      () async {
+        // Same call the app makes; restart off and no process to wait for.
+        final prepared = await prepare();
+        await prepared.service.launchWindowsApply(
+          prepared.plan,
+          processId: 0,
+          restart: false,
+        );
+        expect(prepared.plan.startedFile.existsSync(), isTrue);
+        final deadline = DateTime.now().add(const Duration(seconds: 30));
+        while (!prepared.plan.resultFile.existsSync() &&
+            DateTime.now().isBefore(deadline)) {
+          await Future<void>.delayed(const Duration(milliseconds: 200));
+        }
+        final outcome = jsonDecode(prepared.plan.resultFile.readAsStringSync());
+        expect(outcome['ok'], isTrue, reason: '${outcome['message']}');
+        expect(_read(prepared.target, '猛人快传.exe'), 'new exe');
+        expect(_read(prepared.target, '用户笔记.txt'), 'keep me');
+      },
+      skip: Platform.isWindows ? false : 'Windows only',
+    );
+
+    test('Windows argument quoting survives spaces, quotes and backslashes', () {
+      expect(quoteWindowsArgument('plain'), '"plain"');
+      expect(quoteWindowsArgument(r'C:\安装 目录'), r'"C:\安装 目录"');
+      expect(quoteWindowsArgument('D:\\'), r'"D:\\"');
+      expect(quoteWindowsArgument(r'a\"b'), r'"a\\\"b"');
+      expect(quoteWindowsArgument("O'Brien"), "\"O'Brien\"");
+    });
 
     test(
       'refuses unexpected launchers and incomplete packages',
