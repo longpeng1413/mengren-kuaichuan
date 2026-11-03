@@ -9,6 +9,8 @@ import '../diagnostics/diagnostic_log_service.dart';
 import '../pairing/pairing_endpoint.dart';
 import '../remote/remote_access_settings.dart';
 import '../storage/received_file_service.dart';
+import '../update/app_update_service.dart';
+import '../update/update_flow.dart';
 import 'app_settings.dart';
 
 typedef SaveAppSettings = Future<void> Function(AppSettings settings);
@@ -46,6 +48,8 @@ class _SettingsPageState extends State<SettingsPage> {
   late List<RemovedDeviceEntry> _removedDevices;
   bool _working = false;
   DiagnosticLogInfo? _diagnosticInfo;
+  bool _checkingUpdate = false;
+  int _updateCacheBytes = 0;
 
   @override
   void initState() {
@@ -54,6 +58,58 @@ class _SettingsPageState extends State<SettingsPage> {
     _remoteSettings = widget.initialRemoteSettings;
     _removedDevices = List.of(widget.removedDevices);
     if (Platform.isAndroid || Platform.isWindows) _refreshDiagnosticInfo();
+    if (AppUpdateService.isSupportedPlatform) _refreshUpdateCache();
+  }
+
+  Future<void> _refreshUpdateCache() async {
+    try {
+      final bytes = await AppUpdateService.instance.cacheSize();
+      if (mounted) setState(() => _updateCacheBytes = bytes);
+    } catch (_) {}
+  }
+
+  Future<void> _checkForUpdate() async {
+    if (_checkingUpdate) return;
+    setState(() => _checkingUpdate = true);
+    try {
+      final result = await AppUpdateService.instance.check();
+      if (!mounted) return;
+      switch (result) {
+        case UpdateFound(:final update):
+          await UpdateFlow.offer(context, update, automatic: false);
+        case UpdateUpToDate():
+          _showMessage('已是最新版本 v$appVersion');
+        case UpdateWithoutInstaller(:final version, :final pageUrl):
+          _showMessage('新版本 v$version 暂时没有本平台的安装包，请到发布页查看');
+          await UpdateFlow.openReleasePage(pageUrl);
+      }
+    } on UpdateException catch (error) {
+      _showError(error.message);
+    } catch (error) {
+      _showError('检查更新失败：$error');
+    } finally {
+      if (mounted) setState(() => _checkingUpdate = false);
+      await _refreshUpdateCache();
+    }
+  }
+
+  Future<void> _clearUpdateCache() async {
+    try {
+      final removed = await AppUpdateService.instance.clearCache();
+      _showMessage('已清空更新缓存（${formatUpdateBytes(removed)}）');
+    } on UpdateException catch (error) {
+      _showError(error.message);
+    } catch (error) {
+      _showError('清空更新缓存失败：$error');
+    } finally {
+      await _refreshUpdateCache();
+    }
+  }
+
+  void _showMessage(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
   }
 
   Future<void> _refreshDiagnosticInfo() async {
@@ -351,11 +407,7 @@ class _SettingsPageState extends State<SettingsPage> {
     }
   }
 
-  void _showError(String message) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(message)));
-  }
+  void _showError(String message) => _showMessage(message);
 
   @override
   Widget build(BuildContext context) {
@@ -432,6 +484,47 @@ class _SettingsPageState extends State<SettingsPage> {
               ),
             ),
           ),
+          if (AppUpdateService.isSupportedPlatform) ...[
+            const Divider(height: 32),
+            Text(
+              '软件更新',
+              key: const Key('update_section'),
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('自动检查更新'),
+              subtitle: const Text('每天最多检查一次；只向 GitHub 查询版本，不上传聊天或文件'),
+              value: _settings.autoCheckUpdates,
+              onChanged: (enabled) =>
+                  _save(_settings.copyWith(autoCheckUpdates: enabled)),
+            ),
+            ListTile(
+              key: const Key('check_update'),
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.system_update_outlined),
+              title: const Text('检查更新'),
+              subtitle: const Text('当前 v$appVersion；发现新版本后可一键下载、校验并安装'),
+              trailing: _checkingUpdate
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.chevron_right),
+              onTap: _checkingUpdate ? null : _checkForUpdate,
+            ),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.cleaning_services_outlined),
+              title: const Text('清空更新缓存'),
+              subtitle: Text(
+                '当前 ${formatUpdateBytes(_updateCacheBytes)}；'
+                '下载的安装包和临时文件每次启动都会自动清理',
+              ),
+              onTap: _checkingUpdate ? null : _clearUpdateCache,
+            ),
+          ],
           const Divider(height: 32),
           Text('设备管理', style: Theme.of(context).textTheme.titleMedium),
           ListTile(

@@ -25,6 +25,8 @@ import 'storage/received_file_service.dart';
 import 'transfer/transfer_client.dart';
 import 'transfer/transfer_models.dart';
 import 'transfer/transfer_server.dart';
+import 'update/app_update_service.dart';
+import 'update/update_flow.dart';
 
 typedef SaveIdentity = Future<void> Function(DeviceIdentity identity);
 
@@ -166,6 +168,8 @@ class _DeviceListPageState extends State<DeviceListPage>
   StreamSubscription<RemoteRelayException>? _remoteErrorSubscription;
   Timer? _reconnectTimer;
   Timer? _remoteReconnectTimer;
+  Timer? _updateCheckTimer;
+  Timer? _updatePeriodicTimer;
   bool _androidInForeground = true;
   Future<void> _lifecycleTransition = Future.value();
   final ChatHistoryStore _chatStore = ChatHistoryStore();
@@ -307,6 +311,57 @@ class _DeviceListPageState extends State<DeviceListPage>
     unawaited(_startTransferServer());
     unawaited(_configureRemoteRelay());
     _startRemoteReconnectTimer();
+    _scheduleUpdateChecks();
+    _showPreviousUpdateOutcome();
+  }
+
+  void _scheduleUpdateChecks() {
+    if (!AppUpdateService.isSupportedPlatform) return;
+    _updateCheckTimer = Timer(
+      const Duration(seconds: 8),
+      () => unawaited(_autoCheckForUpdate()),
+    );
+    // Windows often stays in the tray for days; shouldAutoCheck still limits
+    // real network checks to once per 24 hours.
+    _updatePeriodicTimer = Timer.periodic(
+      const Duration(hours: 6),
+      (_) => unawaited(_autoCheckForUpdate()),
+    );
+  }
+
+  Future<void> _autoCheckForUpdate() async {
+    if (!mounted || !widget.settings.autoCheckUpdates) return;
+    if (!_shouldRunNetworkWork) return;
+    final updater = AppUpdateService.instance;
+    try {
+      if (updater.isBusy || !await updater.shouldAutoCheck()) return;
+      final result = await updater.check();
+      if (!mounted || result is! UpdateFound) return;
+      if (await updater.skippedVersion() == result.update.version) return;
+      if (!mounted) return;
+      await UpdateFlow.offer(context, result.update, automatic: true);
+    } catch (_) {
+      // Automatic checks stay silent; the reason is in the diagnostics log.
+    }
+  }
+
+  void _showPreviousUpdateOutcome() {
+    final outcome = AppUpdateService.instance.takePreviousOutcome();
+    if (outcome == null) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          duration: Duration(seconds: outcome.succeeded ? 4 : 12),
+          content: Text(
+            outcome.succeeded
+                ? '已更新到 v${outcome.version}'
+                : '自动更新到 v${outcome.version} 没有完成，已保留原来的版本。'
+                      '可以在设置里重试，或去发布页手动下载。',
+          ),
+        ),
+      );
+    });
   }
 
   bool get _shouldRunNetworkWork => !Platform.isAndroid || _androidInForeground;
@@ -998,6 +1053,8 @@ class _DeviceListPageState extends State<DeviceListPage>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _updateCheckTimer?.cancel();
+    _updatePeriodicTimer?.cancel();
     _devicesSubscription?.cancel();
     _pairedDevicesSubscription?.cancel();
     _incomingSubscription?.cancel();

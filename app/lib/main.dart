@@ -13,6 +13,7 @@ import 'src/diagnostics/diagnostic_log_service.dart';
 import 'src/pairing/pairing_endpoint.dart';
 import 'src/remote/remote_access_settings.dart';
 import 'src/settings/app_settings.dart';
+import 'src/update/app_update_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -61,6 +62,17 @@ Future<void> main() async {
         error: error,
         stackTrace: stackTrace,
       );
+    }
+    if (AppUpdateService.isSupportedPlatform) {
+      try {
+        await AppUpdateService.instance.cleanupOnStartup();
+      } catch (error, stackTrace) {
+        await diagnostics.log(
+          'update_cache_cleanup_failed',
+          error: error,
+          stackTrace: stackTrace,
+        );
+      }
     }
     await DesktopTrayService.instance.initialize();
     if (Platform.isWindows && settings.launchAtStartup) {

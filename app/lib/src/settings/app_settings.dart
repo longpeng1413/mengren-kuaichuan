@@ -38,6 +38,7 @@ class AppSettings {
     this.windowsSaveDirectory,
     this.androidTreeUri,
     this.androidSaveLabel = '系统下载/猛人快传',
+    this.autoCheckUpdates = true,
   });
 
   final AppThemeColor themeColor;
@@ -46,6 +47,7 @@ class AppSettings {
   final String? windowsSaveDirectory;
   final String? androidTreeUri;
   final String androidSaveLabel;
+  final bool autoCheckUpdates;
 
   bool get usesCustomAndroidDirectory => androidTreeUri != null;
 
@@ -56,6 +58,7 @@ class AppSettings {
     String? windowsSaveDirectory,
     String? androidTreeUri,
     String? androidSaveLabel,
+    bool? autoCheckUpdates,
     bool clearAndroidDirectory = false,
     bool clearWindowsDirectory = false,
   }) {
@@ -72,6 +75,7 @@ class AppSettings {
       androidSaveLabel: clearAndroidDirectory
           ? '系统下载/猛人快传'
           : androidSaveLabel ?? this.androidSaveLabel,
+      autoCheckUpdates: autoCheckUpdates ?? this.autoCheckUpdates,
     );
   }
 }
@@ -83,6 +87,7 @@ class AppSettingsStore {
   static const _windowsDirectoryKey = 'settings_windows_save_directory';
   static const _androidTreeKey = 'settings_android_tree_uri';
   static const _androidLabelKey = 'settings_android_save_label';
+  static const _autoCheckUpdatesKey = 'settings_auto_check_updates';
 
   Future<AppSettings> load() async {
     final preferences = await SharedPreferences.getInstance();
@@ -101,6 +106,7 @@ class AppSettingsStore {
       windowsSaveDirectory: preferences.getString(_windowsDirectoryKey),
       androidTreeUri: preferences.getString(_androidTreeKey),
       androidSaveLabel: preferences.getString(_androidLabelKey) ?? '系统下载/猛人快传',
+      autoCheckUpdates: preferences.getBool(_autoCheckUpdatesKey) ?? true,
     );
   }
 
@@ -123,5 +129,6 @@ class AppSettingsStore {
       await preferences.setString(_androidTreeKey, settings.androidTreeUri!);
     }
     await preferences.setString(_androidLabelKey, settings.androidSaveLabel);
+    await preferences.setBool(_autoCheckUpdatesKey, settings.autoCheckUpdates);
   }
 }

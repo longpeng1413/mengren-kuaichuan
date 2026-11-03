@@ -7,7 +7,7 @@
 先完整阅读：
 
 1. `AGENTS.md`
-2. `docs/开发交接说明-v1.7.8.md`、`docs/开发交接说明-v1.7.7.md`
+2. `docs/开发交接说明-v1.8.0.md`、`docs/开发交接说明-v1.7.8.md`、`docs/开发交接说明-v1.7.7.md`
 3. `CHANGELOG.md`
 4. `README.md`
 
@@ -15,6 +15,7 @@
 
 ## 当前状态
 
+- 开发中候选版：v1.8.0+27，新增 Android/Windows 检查更新与一键自动更新（GitHub Release、SHA-256 校验、Android 系统安装器、Windows 脚本替换并自动还原）。尚未打标签和发布，等用户实机确认；设计、附件命名约束和未验证项见 `docs/开发交接说明-v1.8.0.md`。
 - 当前正式版：v1.7.8+26，标签 `v1.7.8`：代码与 rc.2 相同，全部应用图标换成红宝石配色（和同系列的猛人截图教鞭、猛人学习区分），用户要求以正式最新版发布。
 - 上一个正式版：v1.7.6+23，标签 `v1.7.6`。修复候选版 v1.7.7+25 / `v1.7.7-rc.2`，用户已确认本轮交互修复可用并授权同步 GitHub，同时补充确认上次 Windows 后台卡死修复已连续使用几天正常；历史 v1.7.7+24 / rc.1 保留。没有混用 v1.7.5。
 - 实机验收：2026-10-14 用户确认 v1.7.8 实机验收通过：电脑休眠/唤醒、断网/切换 Wi-Fi 恢复、Android 后台返回与双向文字/文件/停止发送、Android 长按拖选复制均正常；v1.7.7 遗留的实机缺口已全部关闭。
@@ -55,6 +56,7 @@
 - 公网客户端与加密：`packages/remote_protocol/`
 - VPS 中转服务：`relay_server/`
 - 远程设置：`app/lib/src/remote/remote_access_settings.dart`
+- 检查更新与一键更新：`app/lib/src/update/`
 - 聊天和停止按钮：`app/lib/src/chat/chat_page.dart`
 - Android 原生分享/日志：`app/android/app/src/main/kotlin/com/personal/lantransfer/lan_transfer/MainActivity.kt`
 - Windows 单实例：`app/windows/runner/main.cpp`

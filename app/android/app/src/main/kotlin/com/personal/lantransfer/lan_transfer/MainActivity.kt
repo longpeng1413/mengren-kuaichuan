@@ -1,9 +1,11 @@
 package com.personal.lantransfer.lan_transfer
 
 import android.app.Activity
+import android.app.PendingIntent
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageInstaller
 import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.Build
@@ -14,11 +16,13 @@ import android.os.Bundle
 import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.provider.OpenableColumns
+import android.provider.Settings
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
 import java.io.InterruptedIOException
+import java.lang.ref.WeakReference
 import java.net.Inet4Address
 import java.net.NetworkInterface
 import java.text.SimpleDateFormat
@@ -32,16 +36,58 @@ import kotlin.concurrent.thread
 class MainActivity : FlutterActivity() {
     companion object {
         private const val FILE_CHANNEL = "com.personal.lantransfer.lan_transfer/files"
+        private const val UPDATE_CHANNEL = "com.personal.lantransfer.lan_transfer/update"
         private const val DIRECTORY_REQUEST = 8231
         private const val MAX_DIAGNOSTIC_FILE_BYTES = 1024 * 1024L
         private const val DIAGNOSTIC_RETENTION_MS = 7L * 24 * 60 * 60 * 1000
         private val diagnosticLock = Any()
+        @Volatile private var activeActivity: WeakReference<MainActivity>? = null
+
+        /** Called by [UpdateInstallReceiver] on the main thread. */
+        fun onUpdateInstallStatus(context: Context, intent: Intent) {
+            val activity = activeActivity?.get()?.takeUnless { it.activityDestroyed }
+            val status = intent.getIntExtra(
+                PackageInstaller.EXTRA_STATUS,
+                PackageInstaller.STATUS_FAILURE,
+            )
+            val message = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE)
+            when (status) {
+                PackageInstaller.STATUS_PENDING_USER_ACTION -> {
+                    val confirm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        intent.getParcelableExtra(Intent.EXTRA_INTENT, Intent::class.java)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
+                    }
+                    if (confirm == null) {
+                        activity?.reportUpdateStatus("failure", status, "系统没有提供安装确认窗口")
+                        return
+                    }
+                    try {
+                        if (activity != null) {
+                            activity.startActivity(confirm)
+                        } else {
+                            context.startActivity(confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                        }
+                        activity?.reportUpdateStatus("pending_user_action", status, null)
+                    } catch (error: Exception) {
+                        activity?.reportUpdateStatus("failure", status, error.message)
+                    }
+                }
+                PackageInstaller.STATUS_SUCCESS ->
+                    activity?.reportUpdateStatus("success", status, null)
+                PackageInstaller.STATUS_FAILURE_ABORTED ->
+                    activity?.reportUpdateStatus("cancelled", status, message)
+                else -> activity?.reportUpdateStatus("failure", status, message)
+            }
+        }
     }
 
     private var multicastLock: WifiManager.MulticastLock? = null
     private var lastNetworkSignature: String? = null
     private var pendingDirectoryResult: MethodChannel.Result? = null
     private var fileChannel: MethodChannel? = null
+    private var updateChannel: MethodChannel? = null
     private val pendingSharedFiles = mutableListOf<String>()
     private val shareImportExecutor: ExecutorService = Executors.newSingleThreadExecutor { work ->
         Thread(work, "mengren-share-import")
@@ -51,6 +97,7 @@ class MainActivity : FlutterActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         nativeLog("activity_on_create action=${intent?.action ?: "none"}")
         super.onCreate(savedInstanceState)
+        activeActivity = WeakReference(this)
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -78,6 +125,19 @@ class MainActivity : FlutterActivity() {
                         clearDiagnostics()
                         result.success(null)
                     }
+                    else -> result.notImplemented()
+                }
+            }
+        }
+        updateChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, UPDATE_CHANNEL).also { channel ->
+            channel.setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "canInstallPackages" -> result.success(canInstallPackages())
+                    "openInstallPermissionSettings" -> {
+                        openInstallPermissionSettings()
+                        result.success(null)
+                    }
+                    "installApk" -> installApk(call.argument<String>("path"), result)
                     else -> result.notImplemented()
                 }
             }
@@ -502,6 +562,81 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    private fun canInstallPackages(): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.O || packageManager.canRequestPackageInstalls()
+
+    private fun openInstallPermissionSettings() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        try {
+            startActivity(
+                Intent(
+                    Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                    Uri.parse("package:$packageName"),
+                ),
+            )
+        } catch (error: Exception) {
+            nativeLog("update_permission_settings_failed", error)
+            startActivity(Intent(Settings.ACTION_SECURITY_SETTINGS))
+        }
+    }
+
+    /**
+     * Streams the already verified APK into a PackageInstaller session. The
+     * system shows its own confirmation and refuses a different signature.
+     */
+    private fun installApk(path: String?, result: MethodChannel.Result) {
+        val apk = path?.let(::File)
+        if (apk == null || !apk.isFile) {
+            result.error("missing_file", "更新安装包不存在", null)
+            return
+        }
+        thread(name = "mengren-update-install") {
+            try {
+                val installer = packageManager.packageInstaller
+                val params = PackageInstaller.SessionParams(
+                    PackageInstaller.SessionParams.MODE_FULL_INSTALL,
+                ).apply {
+                    setAppPackageName(packageName)
+                    setSize(apk.length())
+                }
+                val sessionId = installer.createSession(params)
+                installer.openSession(sessionId).use { session ->
+                    apk.inputStream().use { input ->
+                        session.openWrite("base.apk", 0, apk.length()).use { output ->
+                            input.copyTo(output, 1024 * 1024)
+                            session.fsync(output)
+                        }
+                    }
+                    val statusIntent = Intent(this, UpdateInstallReceiver::class.java)
+                    var flags = PendingIntent.FLAG_UPDATE_CURRENT
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        // The installer must add its status extras.
+                        flags = flags or PendingIntent.FLAG_MUTABLE
+                    }
+                    val pending = PendingIntent.getBroadcast(this, sessionId, statusIntent, flags)
+                    session.commit(pending.intentSender)
+                }
+                nativeLog("update_install_committed")
+                runOnUiThread { if (!activityDestroyed) result.success(null) }
+            } catch (error: Exception) {
+                nativeLog("update_install_failed", error)
+                runOnUiThread {
+                    if (!activityDestroyed) {
+                        result.error("install_failed", error.message ?: "无法开始安装", null)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun reportUpdateStatus(status: String, code: Int, message: String?) {
+        nativeLog("update_install_status status=$status code=$code")
+        updateChannel?.invokeMethod(
+            "installStatus",
+            mapOf("status" to status, "code" to code, "message" to message),
+        )
+    }
+
     override fun onStart() {
         super.onStart()
         nativeLog("activity_on_start")
@@ -526,6 +661,9 @@ class MainActivity : FlutterActivity() {
         activityDestroyed = true
         fileChannel?.setMethodCallHandler(null)
         fileChannel = null
+        updateChannel?.setMethodCallHandler(null)
+        updateChannel = null
+        if (activeActivity?.get() === this) activeActivity = null
         shareImportExecutor.shutdownNow()
         super.onDestroy()
     }
