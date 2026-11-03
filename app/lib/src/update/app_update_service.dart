@@ -736,17 +736,21 @@ class AppUpdateService {
         throw const UpdateCancelledException();
       }
       await _diagnostics.log('update_download_failed', error: error);
-      // github.com downloads often need a proxy in mainland China.
+      // github.com downloads often need a proxy in mainland China. A user
+      // whose phone proxy was per-app hit this: browsers were proxied, this
+      // app was not.
       if (error is TimeoutException) {
         throw const UpdateException(
           'GitHub 下载服务器长时间没有响应。国内访问 GitHub 常常需要代理：'
-          '请确认代理已开启后重试，或点“去网页手动下载”，也可以用电脑把安装包发到手机。',
+          '请确认代理已开启；如果代理软件设置了“分应用代理”，要把猛人快传加入走代理的应用。'
+          '也可以点“去网页手动下载”，或用电脑把安装包发到手机。',
         );
       }
       if (error is SocketException || error is HttpException) {
         throw const UpdateException(
-          '连不上 GitHub 下载服务器或下载中断。请确认代理已开启后重试，'
-          '或点“去网页手动下载”。',
+          '连不上 GitHub 下载服务器或下载中断。请确认代理已开启；'
+          '如果代理软件设置了“分应用代理”，要把猛人快传加入走代理的应用。'
+          '也可以点“去网页手动下载”。',
         );
       }
       if (error is HandshakeException) {
