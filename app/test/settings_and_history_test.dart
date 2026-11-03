@@ -250,6 +250,16 @@ void main() {
     );
     expect(find.text('使用帮助'), findsOneWidget);
     expect(find.text('手机热点互传'), findsOneWidget);
+
+    // Public relay setup is explained step by step with a link to the guide.
+    final remoteHelp = find.byKey(const Key('remote_setup_help'));
+    await tester.ensureVisible(remoteHelp);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('公网远程传输怎么配置'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('wss://你的域名/v1/relay'), findsOneWidget);
+    expect(find.textContaining('家庭口令校验码'), findsOneWidget);
+    expect(find.text('查看完整部署指南'), findsOneWidget);
     expect(find.text('大文件请使用 5 GHz 热点'), findsOneWidget);
     expect(find.text('连接注意事项'), findsOneWidget);
   });

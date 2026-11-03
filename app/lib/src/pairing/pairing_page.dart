@@ -160,19 +160,30 @@ class _PairingPageState extends State<PairingPage> {
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          QrImageView(
-                            data: endpoint.payload.toString(),
-                            version: QrVersions.auto,
-                            size: 230,
-                            eyeStyle: const QrEyeStyle(
-                              eyeShape: QrEyeShape.square,
-                              color: Colors.black,
+                          // Always black on white: scanners fail on the dark
+                          // theme's card colour, and need a light quiet zone.
+                          Container(
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(14),
                             ),
-                            dataModuleStyle: const QrDataModuleStyle(
-                              dataModuleShape: QrDataModuleShape.square,
-                              color: Colors.black,
+                            child: QrImageView(
+                              data: endpoint.payload.toString(),
+                              version: QrVersions.auto,
+                              size: 230,
+                              backgroundColor: Colors.white,
+                              eyeStyle: const QrEyeStyle(
+                                eyeShape: QrEyeShape.square,
+                                color: Colors.black,
+                              ),
+                              dataModuleStyle: const QrDataModuleStyle(
+                                dataModuleShape: QrDataModuleShape.square,
+                                color: Colors.black,
+                              ),
                             ),
                           ),
+                          const SizedBox(height: 10),
                           if (_addresses.length > 1)
                             DropdownButton<String>(
                               value: address,

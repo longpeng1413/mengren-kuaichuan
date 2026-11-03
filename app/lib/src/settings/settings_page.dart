@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:launch_at_startup/launch_at_startup.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../app_version.dart';
 import '../diagnostics/diagnostic_log_service.dart';
@@ -549,10 +551,12 @@ class _SettingsPageState extends State<SettingsPage> {
                     icon: _remoteSettings.enabled
                         ? Icons.cloud_done_outlined
                         : Icons.cloud_off_outlined,
-                    title: _remoteSettings.enabled ? '已启用 VPS 中转' : '未启用 VPS 中转',
+                    title: _remoteSettings.enabled
+                        ? '已启用 VPS 中转'
+                        : '未启用 VPS 中转',
                     subtitle: _remoteSettings.enabled
                         ? '${_remoteSettings.relayUrl}\n密钥保存在系统安全存储中'
-                        : '默认只用局域网；配置自己的 VPS 后可跨网络发送',
+                        : '默认只用局域网；配置方法见下方“使用帮助”',
                     trailing: const Icon(Icons.chevron_right),
                     onTap: _working ? null : _configureRemoteAccess,
                   ),
@@ -583,7 +587,9 @@ class _SettingsPageState extends State<SettingsPage> {
                       title: entry.label,
                       subtitle: '设备标识：${entry.shortId.toUpperCase()}',
                       trailing: TextButton(
-                        onPressed: _working ? null : () => _restoreDevice(entry),
+                        onPressed: _working
+                            ? null
+                            : () => _restoreDevice(entry),
                         child: const Text('恢复'),
                       ),
                     ),
@@ -628,6 +634,28 @@ class _SettingsPageState extends State<SettingsPage> {
               _SettingsSection(
                 title: '使用帮助',
                 children: const [
+                  _HelpTile(
+                    key: Key('remote_setup_help'),
+                    icon: Icons.cloud_outlined,
+                    title: '公网远程传输怎么配置',
+                    body:
+                        '适合手机和电脑不在同一个网络时使用（例如人在外面、电脑在家），'
+                        '需要你自己有一台 VPS 和一个域名。\n'
+                        '1. 在 VPS 上部署猛人快传中转服务，生成一个至少 24 位的访问令牌，'
+                        '并给域名配置 HTTPS（步骤见下方“完整部署指南”）。\n'
+                        '2. 在每台设备的“设置 → 公网远程传输”里打开“启用 VPS 远程连接”，填写三项：'
+                        '中转地址（wss://你的域名/v1/relay）、VPS 访问令牌、家庭加密口令'
+                        '（12–256 位，自己设定）。\n'
+                        '3. 所有设备的三项必须完全一样。填好后对比每台设备显示的“家庭口令校验码”，'
+                        '校验码相同才说明口令一致。\n'
+                        '4. 保存后，主界面本机卡片会显示“VPS 已连接”；不在同一网络的设备会出现在列表里，'
+                        '并标注“公网 VPS 中转”。\n'
+                        '说明：同一局域网内仍优先直连，不走公网；文件在设备之间端到端加密，'
+                        '家庭加密口令只存在本机、不会发给 VPS；公网单个文件不超过 200 MiB，'
+                        '注意手机流量和 VPS 流量。',
+                    linkLabel: '查看完整部署指南',
+                    linkUrl: _relayGuideUrl,
+                  ),
                   _HelpTile(
                     icon: Icons.route_outlined,
                     title: '传输时始终显示实际网络路线',
@@ -778,12 +806,26 @@ class _SettingsTile extends StatelessWidget {
   }
 }
 
+/// The VPS relay setup steps in the public repository.
+const _relayGuideUrl =
+    'https://github.com/$officialUpdateRepository/blob/main/docs/'
+    '%E8%87%AA%E5%BB%BAVPS%E4%B8%AD%E8%BD%AC%E6%8C%87%E5%8D%97-v1.7.2.md';
+
 class _HelpTile extends StatelessWidget {
-  const _HelpTile({required this.icon, required this.title, required this.body});
+  const _HelpTile({
+    required this.icon,
+    required this.title,
+    required this.body,
+    this.linkLabel,
+    this.linkUrl,
+    super.key,
+  });
 
   final IconData icon;
   final String title;
   final String body;
+  final String? linkLabel;
+  final String? linkUrl;
 
   @override
   Widget build(BuildContext context) {
@@ -805,6 +847,23 @@ class _HelpTile extends StatelessWidget {
               height: 1.55,
             ),
           ),
+          if (linkLabel != null && linkUrl != null) ...[
+            const SizedBox(height: 6),
+            TextButton.icon(
+              style: TextButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                visualDensity: VisualDensity.compact,
+              ),
+              onPressed: () => unawaited(
+                launchUrl(
+                  Uri.parse(linkUrl!),
+                  mode: LaunchMode.externalApplication,
+                ),
+              ),
+              icon: const Icon(Icons.open_in_new, size: 16),
+              label: Text(linkLabel!),
+            ),
+          ],
         ],
       ),
     );
