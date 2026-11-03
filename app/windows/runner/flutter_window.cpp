@@ -13,6 +13,7 @@
 
 #include "flutter/generated_plugin_registrant.h"
 #include "utils.h"
+#include "window_size_store.h"
 
 namespace {
 
@@ -161,6 +162,12 @@ LRESULT
 FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                               WPARAM const wparam,
                               LPARAM const lparam) noexcept {
+  // Remember the size after the user finishes resizing and when the app
+  // quits. Observed before plugins, which may consume these messages.
+  if (message == WM_EXITSIZEMOVE || message == WM_DESTROY) {
+    window_size_store::Save(hwnd);
+  }
+
   // Give Flutter, including plugins, an opportunity to handle window messages.
   if (flutter_controller_) {
     std::optional<LRESULT> result =

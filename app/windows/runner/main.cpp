@@ -9,6 +9,7 @@
 
 #include "flutter_window.h"
 #include "utils.h"
+#include "window_size_store.h"
 
 namespace {
 
@@ -45,8 +46,9 @@ void RestoreExistingWindow(HWND window) {
   ::SetForegroundWindow(window);
 }
 
-// A compact, phone-like window: the device list and chats need little width.
-constexpr unsigned int kWindowWidth = 500;
+// First-launch size; afterwards the size the user left the window at is
+// restored (see window_size_store).
+constexpr unsigned int kWindowWidth = 750;
 constexpr unsigned int kWindowHeight = 760;
 
 // Centres the window on the primary monitor's work area and shrinks it on
@@ -119,6 +121,11 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   FlutterWindow window(project);
   Win32Window::Point origin(10, 10);
   Win32Window::Size size(kWindowWidth, kWindowHeight);
+  unsigned int saved_width = 0;
+  unsigned int saved_height = 0;
+  if (window_size_store::Load(saved_width, saved_height)) {
+    size = Win32Window::Size(saved_width, saved_height);
+  }
   CenterOnPrimaryMonitor(origin, size);
   if (!window.Create(kWindowTitle, origin, size)) {
     if (single_instance != nullptr) {
