@@ -52,6 +52,7 @@ void main() {
     expect(find.text('书房电脑'), findsOneWidget);
     expect(find.text('ID ABCD'), findsOneWidget);
     expect(find.text('正在寻找附近的设备'), findsOneWidget);
+    expect(find.text('默认纯局域网传输，不经过公网服务器'), findsOneWidget);
     await tester.tap(find.widgetWithText(FilledButton, '二维码 / 手动连接'));
     await tester.tap(find.byTooltip('修改设备名称'));
     expect(paired, 1);

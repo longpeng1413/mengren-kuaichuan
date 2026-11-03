@@ -86,6 +86,30 @@ class DeviceHomeView extends StatelessWidget {
                       remoteEnabled: remoteEnabled,
                       remoteConnected: remoteConnected,
                     ),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(6, 10, 6, 0),
+                      child: Row(
+                        children: [
+                          Icon(
+                            Icons.lock_outline,
+                            size: 14,
+                            color: theme.colorScheme.onSurfaceVariant,
+                          ),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                              remoteEnabled
+                                  ? '局域网优先；仅远程设备使用加密 VPS 中转'
+                                  : '默认纯局域网传输，不经过公网服务器',
+                              key: const Key('route_privacy_note'),
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: theme.colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                     if (statusError != null)
                       _Notice(
                         icon: Icons.error_outline,
@@ -129,7 +153,7 @@ class DeviceHomeView extends StatelessWidget {
                         ],
                       ),
                     Padding(
-                      padding: const EdgeInsets.fromLTRB(4, 22, 4, 10),
+                      padding: const EdgeInsets.fromLTRB(4, 18, 4, 10),
                       child: Row(
                         children: [
                           Text(

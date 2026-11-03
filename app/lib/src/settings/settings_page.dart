@@ -705,11 +705,26 @@ class _SettingsPageState extends State<SettingsPage> {
                     Text(appVersionLabel, style: theme.textTheme.bodyMedium),
                     const SizedBox(height: 2),
                     Text(
-                      _remoteSettings.enabled
-                          ? '局域网优先；仅远程设备使用加密 VPS 中转'
-                          : '默认纯局域网传输，不经过公网服务器',
+                      '作者 $appAuthor',
+                      key: const Key('about_author'),
                       style: theme.textTheme.bodySmall?.copyWith(
                         color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                    TextButton.icon(
+                      key: const Key('about_github'),
+                      style: TextButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                      ),
+                      onPressed: () => unawaited(
+                        launchUrl(
+                          Uri.parse(_projectUrl),
+                          mode: LaunchMode.externalApplication,
+                        ),
+                      ),
+                      icon: const Icon(Icons.open_in_new, size: 16),
+                      label: const Text(
+                        'github.com/$officialUpdateRepository',
                       ),
                     ),
                   ],
@@ -805,6 +820,8 @@ class _SettingsTile extends StatelessWidget {
     );
   }
 }
+
+const _projectUrl = 'https://github.com/$officialUpdateRepository';
 
 /// The VPS relay setup steps in the public repository.
 const _relayGuideUrl =

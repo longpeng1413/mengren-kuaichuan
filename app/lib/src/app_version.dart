@@ -1,5 +1,8 @@
-const appVersion = '1.8.2';
-const appBuildNumber = 29;
+const appVersion = '1.8.3';
+const appBuildNumber = 30;
+
+/// Shown under the icon in Settings.
+const appAuthor = 'longpeng1413';
 
 /// Only set for the local "update test" build
 /// (`--dart-define=MENGREN_UPDATE_TEST_CURRENT_VERSION=1.7.0`). It makes the
