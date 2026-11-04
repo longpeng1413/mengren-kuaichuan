@@ -74,7 +74,7 @@
 
 修改公网协议或中转服务时，还必须分别在 `packages/remote_protocol` 和 `relay_server` 执行 `dart analyze` 与 `dart test`。
 
-发布前还要验证 APK 签名、Manifest、Windows 单实例、TCP 53318 监听和 ZIP 文件完整性。
+发布前还要验证 APK 签名、Manifest、Windows 单实例、TCP 53318 监听和 ZIP 文件完整性（含 3 个 VC++ 运行库 DLL；本机编译环境为 Visual Studio 2026 生成工具，已补装 C++ ATL 组件）。
 
 ## 版本更新位置
 
