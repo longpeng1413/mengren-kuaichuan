@@ -64,6 +64,36 @@ class BackgroundReceive {
     }
   }
 
+  /// Logs what can stop background receiving, so a diagnostic export shows
+  /// whether the battery exemption and notifications were granted.
+  static Future<void> logStatus() async {
+    if (!isSupported) return;
+    try {
+      final status = await _channel.invokeMapMethod<String, Object?>('status');
+      await DiagnosticLogService.instance.log(
+        'background_receive_status '
+        'manufacturer=${status?['manufacturer']} '
+        'service=${status?['serviceRunning']} '
+        'ignoring_battery=${status?['ignoringBattery']} '
+        'notifications=${status?['notificationsEnabled']}',
+      );
+    } catch (_) {}
+  }
+
+  /// Opens the phone vendor's auto-launch / background page (Huawei, Honor,
+  /// Xiaomi, OPPO, vivo, Meizu), or the app's system info page.
+  static Future<void> openVendorBackgroundSettings() async {
+    if (!isSupported) return;
+    try {
+      final page = await _channel.invokeMethod<String>(
+        'openVendorBackgroundSettings',
+      );
+      await DiagnosticLogService.instance.log(
+        'vendor_background_settings_opened page=$page',
+      );
+    } catch (_) {}
+  }
+
   static Future<void> requestIgnoreBatteryOptimizations() async {
     if (!isSupported) return;
     try {

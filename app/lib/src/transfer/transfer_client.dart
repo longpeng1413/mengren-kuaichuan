@@ -49,7 +49,7 @@ class TransferClient {
       }
       return messageId;
     } on SocketException catch (error) {
-      throw TransferException('无法连接接收设备：${error.message}');
+      throw TransferException('无法连接接收设备：${error.message}', unreachable: true);
     } on HttpException catch (error) {
       throw TransferException('消息连接中断：${error.message}');
     } finally {
@@ -145,7 +145,7 @@ class TransferClient {
       if (cancellation?.isCancelled ?? false) {
         throw const TransferCancelledException();
       }
-      throw TransferException('无法连接接收设备：${error.message}');
+      throw TransferException('无法连接接收设备：${error.message}', unreachable: true);
     } on HttpException catch (error) {
       if (cancellation?.isCancelled ?? false) {
         throw const TransferCancelledException();
@@ -251,9 +251,14 @@ String _randomClientId() {
 }
 
 class TransferException implements Exception {
-  const TransferException(this.message);
+  const TransferException(this.message, {this.unreachable = false});
 
   final String message;
+
+  /// The receiver could not be reached at all (offline, asleep, out of
+  /// range), as opposed to refusing or failing mid-way. Such sends are queued
+  /// until the peer is seen again.
+  final bool unreachable;
 
   @override
   String toString() => message;

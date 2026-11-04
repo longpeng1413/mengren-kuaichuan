@@ -598,6 +598,19 @@ class _SettingsPageState extends State<SettingsPage> {
                         onChanged: _toggleBackgroundReceive,
                       ),
                     ),
+                  if (Platform.isAndroid && _settings.androidBackgroundReceive)
+                    _SettingsTile(
+                      key: const Key('vendor_background_settings'),
+                      icon: Icons.verified_user_outlined,
+                      title: '系统后台设置',
+                      subtitle:
+                          '华为、荣耀等手机要在这里允许猛人快传自启动和后台活动，'
+                          '否则切到后台会被系统冻结',
+                      trailing: const Icon(Icons.open_in_new),
+                      onTap: () => unawaited(
+                        BackgroundReceive.openVendorBackgroundSettings(),
+                      ),
+                    ),
                 ],
               ),
               if (AppUpdateService.isSupportedPlatform)
@@ -764,7 +777,12 @@ class _SettingsPageState extends State<SettingsPage> {
                         '在咖啡店等公共 Wi-Fi 上建议改成“每次都询问”。\n'
                         '后台持续接收（手机）：打开后切到后台、熄屏也能收，收到时会弹通知；按返回键不会退出，'
                         '只是回到后台。从最近任务里划掉或手机重启后，需要重新打开猛人快传。'
-                        '魅族、小米等手机还要在系统设置里允许猛人快传后台运行。电脑端隐藏到托盘时本来就一直在接收。',
+                        '华为、荣耀手机：点“系统后台设置”（或手机设置 → 应用 → 应用启动管理），把猛人快传改成“手动管理”，'
+                        '打开允许自启动、允许关联启动、允许后台活动；再在最近任务里把猛人快传的卡片下拉锁定，'
+                        '一键清理时就不会被关掉。小米、OPPO、vivo、魅族在同一个入口里允许自启动/后台运行即可。'
+                        '电脑端隐藏到托盘时本来就一直在接收。\n'
+                        '对方不在线时发的文字和文件会先排队，显示“等待对方上线”，对方打开猛人快传后自动发出；'
+                        '排队最多 100 条，7 天没发出去会标记为未发送。',
                   ),
                   _HelpTile(
                     icon: Icons.route_outlined,

@@ -159,7 +159,9 @@ class PairingRelay {
     TransferCancellationToken? cancellation,
   }) async {
     final session = _sessions[receiverId];
-    if (session == null) throw const TransferException('配对连接已经断开');
+    if (session == null) {
+      throw const TransferException('配对连接已经断开', unreachable: true);
+    }
     return session.sendFile(
       file,
       onProgress: onProgress,
@@ -172,7 +174,9 @@ class PairingRelay {
     required String text,
   }) async {
     final session = _sessions[receiverId];
-    if (session == null) throw const TransferException('配对连接已经断开');
+    if (session == null) {
+      throw const TransferException('配对连接已经断开', unreachable: true);
+    }
     return session.sendText(text);
   }
 
@@ -334,7 +338,7 @@ class _RelaySession {
     TransferProgress? onProgress,
     TransferCancellationToken? cancellation,
   }) async {
-    if (_isClosed) throw const TransferException('配对连接已经断开');
+    if (_isClosed) throw const TransferException('配对连接已经断开', unreachable: true);
     if (_sending) throw const TransferException('该配对设备正在接收另一个文件');
     _sending = true;
 
@@ -389,7 +393,7 @@ class _RelaySession {
   }
 
   Future<String> sendText(String text) async {
-    if (_isClosed) throw const TransferException('配对连接已经断开');
+    if (_isClosed) throw const TransferException('配对连接已经断开', unreachable: true);
     final trimmed = text.trim();
     if (trimmed.isEmpty) throw const TransferException('消息不能为空');
     if (trimmed.length > 16000) {

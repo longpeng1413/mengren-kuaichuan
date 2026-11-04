@@ -33,6 +33,7 @@ class ChatPage extends StatefulWidget {
     required this.onClearConversation,
     required this.onRemoveDevice,
     this.onCancelIncomingTransfer,
+    this.onDiscardUndelivered,
     this.initialFilePaths = const [],
     super.key,
   });
@@ -45,6 +46,9 @@ class ChatPage extends StatefulWidget {
   final ClearConversation onClearConversation;
   final RemoveDevice onRemoveDevice;
   final CancelIncomingTransfer? onCancelIncomingTransfer;
+
+  /// Cancels a queued message/file or removes one that failed to send.
+  final void Function(String messageId)? onDiscardUndelivered;
   final List<String> initialFilePaths;
 
   @override
@@ -53,6 +57,7 @@ class ChatPage extends StatefulWidget {
 
 class _ChatPageState extends State<ChatPage> {
   final TextEditingController _textController = TextEditingController();
+  final FocusNode _inputFocus = FocusNode();
   final ScrollController _scrollController = ScrollController();
   bool _busy = false;
   String? _sendingFileName;
@@ -91,6 +96,7 @@ class _ChatPageState extends State<ChatPage> {
     widget.messages.removeListener(_messagesChanged);
     widget.incomingProgress.removeListener(_incomingProgressChanged);
     _textController.dispose();
+    _inputFocus.dispose();
     _scrollController.dispose();
     super.dispose();
   }
@@ -143,7 +149,11 @@ class _ChatPageState extends State<ChatPage> {
     } catch (error) {
       _showError(error);
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted) {
+        setState(() => _busy = false);
+        // Keep typing after Enter without clicking back into the box.
+        _inputFocus.requestFocus();
+      }
     }
   }
 
@@ -394,13 +404,14 @@ class _ChatPageState extends State<ChatPage> {
                     widget.device.displayName,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w600,
-                    ),
+                    style: Theme.of(context).textTheme.titleMedium
+                        ?.copyWith(fontWeight: FontWeight.w600),
                   ),
                   Text(
                     widget.device.isRemote
                         ? '公网 VPS 中转 · 单文件 ≤ 200 MiB · 可随时停止'
+                        : widget.device.isOffline
+                        ? '离线 · 发的内容会在对方上线后自动送达'
                         : widget.device.routeLabel,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
@@ -516,8 +527,16 @@ class _ChatPageState extends State<ChatPage> {
                           controller: _scrollController,
                           padding: const EdgeInsets.fromLTRB(16, 16, 16, 10),
                           itemCount: messages.length,
-                          itemBuilder: (context, index) =>
-                              _MessageBubble(message: messages[index]),
+                          itemBuilder: (context, index) => _MessageBubble(
+                            message: messages[index],
+                            onDiscard:
+                                messages[index].deliveryState == null ||
+                                    widget.onDiscardUndelivered == null
+                                ? null
+                                : () => widget.onDiscardUndelivered!(
+                                    messages[index].id,
+                                  ),
+                          ),
                         );
                       },
                     ),
@@ -551,7 +570,11 @@ class _ChatPageState extends State<ChatPage> {
                               },
                               child: TextField(
                                 controller: _textController,
-                                enabled: !_busy,
+                                // Stays enabled while sending: disabling it
+                                // dropped the keyboard focus after every
+                                // Enter. _sendText ignores Enter while busy.
+                                focusNode: _inputFocus,
+                                autofocus: !Platform.isAndroid,
                                 minLines: 1,
                                 maxLines: 5,
                                 maxLength: 16000,
@@ -583,7 +606,9 @@ class _ChatPageState extends State<ChatPage> {
                                   focusedBorder: OutlineInputBorder(
                                     borderRadius: BorderRadius.circular(22),
                                     borderSide: BorderSide(
-                                      color: Theme.of(context).colorScheme.primary,
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .primary,
                                       width: 1.5,
                                     ),
                                   ),
@@ -734,15 +759,19 @@ class _TransferProgress extends StatelessWidget {
 }
 
 class _MessageBubble extends StatelessWidget {
-  const _MessageBubble({required this.message});
+  const _MessageBubble({required this.message, this.onDiscard});
 
   final ChatMessage message;
+
+  /// Cancels a queued item or deletes a failed one.
+  final VoidCallback? onDiscard;
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
     final outgoing = message.isOutgoing;
-    return Align(
+    final state = message.deliveryState;
+    final bubble = Align(
       alignment: outgoing ? Alignment.centerRight : Alignment.centerLeft,
       child: Container(
         constraints: const BoxConstraints(maxWidth: 560),
@@ -778,6 +807,48 @@ class _MessageBubble extends StatelessWidget {
           ],
         ),
       ),
+    );
+    if (state == null) return bubble;
+    final failed = state == ChatDeliveryState.failed;
+    final tone = failed ? colors.error : colors.onSurfaceVariant;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        Opacity(opacity: failed ? 1 : 0.7, child: bubble),
+        Padding(
+          padding: const EdgeInsets.only(bottom: 10),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                failed ? Icons.error_outline : Icons.schedule,
+                size: 14,
+                color: tone,
+              ),
+              const SizedBox(width: 4),
+              Flexible(
+                child: Text(
+                  failed
+                      ? '未发送：${message.deliveryNote ?? '发送失败'}'
+                      : '等待对方上线，上线后自动发送',
+                  key: Key('delivery_${message.id}'),
+                  style: Theme.of(context).textTheme.labelSmall
+                      ?.copyWith(color: tone),
+                ),
+              ),
+              if (onDiscard != null)
+                TextButton(
+                  style: TextButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                  ),
+                  onPressed: onDiscard,
+                  child: Text(failed ? '删除' : '取消'),
+                ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }

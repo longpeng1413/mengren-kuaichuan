@@ -4,6 +4,10 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 enum ChatMessageKind { text, file }
 
+/// Outgoing items that have not reached the peer yet. A queued message is the
+/// outbox entry itself: it is sent once the peer comes online again.
+enum ChatDeliveryState { queued, failed }
+
 class IncomingTextMessage {
   const IncomingTextMessage({
     required this.messageId,
@@ -37,6 +41,8 @@ class ChatMessage {
     this.displayLocation,
     this.fileSize,
     this.isCache = false,
+    this.deliveryState,
+    this.deliveryNote,
   });
 
   final String id;
@@ -54,6 +60,33 @@ class ChatMessage {
   final String? displayLocation;
   final int? fileSize;
   final bool isCache;
+  final ChatDeliveryState? deliveryState;
+
+  /// Why a failed item was not sent, shown under the bubble.
+  final String? deliveryNote;
+
+  bool get isQueued => deliveryState == ChatDeliveryState.queued;
+
+  ChatMessage withDelivery(ChatDeliveryState? state, {String? note}) =>
+      ChatMessage(
+        id: id,
+        peerId: peerId,
+        peerName: peerName,
+        senderId: senderId,
+        senderName: senderName,
+        kind: kind,
+        sentAt: sentAt,
+        isOutgoing: isOutgoing,
+        text: text,
+        fileName: fileName,
+        filePath: filePath,
+        contentUri: contentUri,
+        displayLocation: displayLocation,
+        fileSize: fileSize,
+        isCache: isCache,
+        deliveryState: state,
+        deliveryNote: note,
+      );
 
   Map<String, Object?> toJson() => {
     'id': id,
@@ -71,6 +104,8 @@ class ChatMessage {
     'displayLocation': displayLocation,
     'fileSize': fileSize,
     'isCache': isCache,
+    if (deliveryState != null) 'deliveryState': deliveryState!.name,
+    if (deliveryNote != null) 'deliveryNote': deliveryNote,
   };
 
   static ChatMessage? tryFromJson(Object? value) {
@@ -112,6 +147,10 @@ class ChatMessage {
       displayLocation: value['displayLocation'] as String?,
       fileSize: value['fileSize'] as int?,
       isCache: value['isCache'] as bool? ?? false,
+      deliveryState: ChatDeliveryState.values
+          .where((state) => state.name == value['deliveryState'])
+          .firstOrNull,
+      deliveryNote: value['deliveryNote'] as String?,
     );
   }
 }

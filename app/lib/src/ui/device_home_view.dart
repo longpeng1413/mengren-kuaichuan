@@ -24,6 +24,7 @@ class DeviceHomeView extends StatelessWidget {
     this.onDismissRemoteError,
     this.pendingSharedFileCount = 0,
     this.onDiscardSharedFiles,
+    this.queuedCounts = const {},
     super.key,
   });
 
@@ -43,6 +44,9 @@ class DeviceHomeView extends StatelessWidget {
   final VoidCallback? onDismissRemoteError;
   final int pendingSharedFileCount;
   final VoidCallback? onDiscardSharedFiles;
+
+  /// Device ID → number of messages and files waiting for it to come online.
+  final Map<String, int> queuedCounts;
 
   @override
   Widget build(BuildContext context) {
@@ -162,9 +166,13 @@ class DeviceHomeView extends StatelessWidget {
                               fontWeight: FontWeight.w600,
                             ),
                           ),
-                          if (devices.isNotEmpty) ...[
+                          if (devices.any((device) => !device.isOffline)) ...[
                             const SizedBox(width: 8),
-                            _CountBadge(count: devices.length),
+                            _CountBadge(
+                              count: devices
+                                  .where((device) => !device.isOffline)
+                                  .length,
+                            ),
                           ],
                         ],
                       ),
@@ -185,6 +193,7 @@ class DeviceHomeView extends StatelessWidget {
                     separatorBuilder: (_, _) => const SizedBox(height: 8),
                     itemBuilder: (context, index) => _DeviceTile(
                       device: devices[index],
+                      queuedCount: queuedCounts[devices[index].deviceId] ?? 0,
                       onTap: () => onOpenDevice(devices[index]),
                     ),
                   ),
@@ -197,8 +206,9 @@ class DeviceHomeView extends StatelessWidget {
   }
 }
 
-IconData _platformIcon(String platform) =>
-    platform == 'android' ? Icons.smartphone_rounded : Icons.laptop_windows_rounded;
+IconData _platformIcon(String platform) => platform == 'android'
+    ? Icons.smartphone_rounded
+    : Icons.laptop_windows_rounded;
 
 String _platformName(String platform) =>
     platform == 'android' ? 'Android' : 'Windows';
@@ -224,7 +234,10 @@ class _IdentityCard extends StatelessWidget {
     final dark = theme.brightness == Brightness.dark;
     final onHero = dark ? Colors.white : colors.onPrimary;
     final brand = dark ? colors.inversePrimary : colors.primary;
-    final gradient = [brand, Color.lerp(brand, Colors.black, dark ? 0.4 : 0.28)!];
+    final gradient = [
+      brand,
+      Color.lerp(brand, Colors.black, dark ? 0.4 : 0.28)!,
+    ];
     return DecoratedBox(
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(22),
@@ -342,9 +355,8 @@ class _HeroChip extends StatelessWidget {
           ],
           Text(
             label,
-            style: Theme.of(context).textTheme.labelSmall?.copyWith(
-              color: foreground,
-            ),
+            style: Theme.of(context).textTheme.labelSmall
+                ?.copyWith(color: foreground),
           ),
         ],
       ),
@@ -378,10 +390,15 @@ class _CountBadge extends StatelessWidget {
 }
 
 class _DeviceTile extends StatelessWidget {
-  const _DeviceTile({required this.device, required this.onTap});
+  const _DeviceTile({
+    required this.device,
+    required this.onTap,
+    this.queuedCount = 0,
+  });
 
   final DiscoveredDevice device;
   final VoidCallback onTap;
+  final int queuedCount;
 
   @override
   Widget build(BuildContext context) {
@@ -393,8 +410,9 @@ class _DeviceTile extends StatelessWidget {
       DeviceConnectionMode.direct => const Color(0xFF2E9E5B),
       DeviceConnectionMode.paired => const Color(0xFF3B7DDD),
       DeviceConnectionMode.remote => const Color(0xFFE0A21B),
+      DeviceConnectionMode.offline => colors.outline,
     };
-    return Card(
+    final tile = Card(
       child: InkWell(
         onTap: onTap,
         child: Padding(
@@ -442,9 +460,11 @@ class _DeviceTile extends StatelessWidget {
                         const SizedBox(width: 6),
                         Flexible(
                           child: Text(
-                            '${device.isRemote ? '远程 ' : ''}'
-                            '${_platformName(device.platform)}'
-                            ' · ${device.routeLabel} · ${device.shortId}',
+                            device.isOffline
+                                ? '离线 · 发的内容会在对方上线后自动送达'
+                                : '${device.isRemote ? '远程 ' : ''}'
+                                      '${_platformName(device.platform)}'
+                                      ' · ${device.routeLabel} · ${device.shortId}',
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: theme.textTheme.bodySmall?.copyWith(
@@ -457,12 +477,32 @@ class _DeviceTile extends StatelessWidget {
                   ],
                 ),
               ),
+              if (queuedCount > 0)
+                Container(
+                  margin: const EdgeInsets.only(left: 8),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 3,
+                  ),
+                  decoration: BoxDecoration(
+                    color: colors.primaryContainer,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Text(
+                    '$queuedCount 条待发送',
+                    key: Key('queued_${device.deviceId}'),
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: colors.onPrimaryContainer,
+                    ),
+                  ),
+                ),
               Icon(Icons.chevron_right, color: colors.onSurfaceVariant),
             ],
           ),
         ),
       ),
     );
+    return device.isOffline ? Opacity(opacity: 0.6, child: tile) : tile;
   }
 }
 

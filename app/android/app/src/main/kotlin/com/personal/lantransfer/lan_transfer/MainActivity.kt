@@ -180,6 +180,17 @@ class MainActivity : FlutterActivity() {
                         result.success(null)
                     }
                     "isIgnoringBatteryOptimizations" -> result.success(isIgnoringBatteryOptimizations())
+                    "status" -> result.success(
+                        mapOf(
+                            "ignoringBattery" to isIgnoringBatteryOptimizations(),
+                            "notificationsEnabled" to
+                                (getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager)
+                                    .areNotificationsEnabled(),
+                            "manufacturer" to Build.MANUFACTURER,
+                            "serviceRunning" to BackgroundReceiveService.isRunning,
+                        ),
+                    )
+                    "openVendorBackgroundSettings" -> result.success(openVendorBackgroundSettings())
                     "requestIgnoreBatteryOptimizations" -> {
                         requestIgnoreBatteryOptimizations()
                         result.success(null)
@@ -622,6 +633,46 @@ class MainActivity : FlutterActivity() {
     private fun isIgnoringBatteryOptimizations(): Boolean {
         val power = getSystemService(Context.POWER_SERVICE) as PowerManager
         return power.isIgnoringBatteryOptimizations(packageName)
+    }
+
+    /**
+     * Huawei/Honor and other vendors freeze background apps (even with a
+     * foreground service) unless the user allows auto-launch / background
+     * activity in the vendor's own manager. Opens that page when one of the
+     * known screens exists; otherwise the app's system info page. Returns
+     * which one was opened.
+     */
+    private fun openVendorBackgroundSettings(): String {
+        val candidates = listOf(
+            "com.huawei.systemmanager" to "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity",
+            "com.huawei.systemmanager" to "com.huawei.systemmanager.appcontrol.activity.StartupAppControlActivity",
+            "com.huawei.systemmanager" to "com.huawei.systemmanager.optimize.process.ProtectActivity",
+            "com.hihonor.systemmanager" to "com.hihonor.systemmanager.startupmgr.ui.StartupNormalAppListActivity",
+            "com.miui.securitycenter" to "com.miui.permcenter.autostart.AutoStartManagementActivity",
+            "com.coloros.safecenter" to "com.coloros.safecenter.permission.startup.StartupAppListActivity",
+            "com.oplus.safecenter" to "com.oplus.safecenter.permission.startup.StartupAppListActivity",
+            "com.vivo.permissionmanager" to "com.vivo.permissionmanager.activity.BgStartUpManagerActivity",
+            "com.iqoo.secure" to "com.iqoo.secure.ui.phoneoptimize.BgStartUpManager",
+            "com.meizu.safe" to "com.meizu.safe.permission.SmartBGActivity",
+        )
+        for ((pkg, cls) in candidates) {
+            val intent = Intent().setClassName(pkg, cls).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            if (intent.resolveActivity(packageManager) == null) continue
+            try {
+                startActivity(intent)
+                nativeLog("vendor_background_settings_opened page=$cls")
+                return cls
+            } catch (error: Exception) {
+                nativeLog("vendor_background_settings_failed page=$cls", error)
+            }
+        }
+        try {
+            startActivity(
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")),
+            )
+        } catch (_: Exception) {
+        }
+        return "app_details"
     }
 
     /** Without this, Doze suspends networking a while after the screen goes off. */

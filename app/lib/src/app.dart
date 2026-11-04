@@ -9,6 +9,7 @@ import 'package:path_provider/path_provider.dart';
 
 import 'chat/chat_message.dart';
 import 'chat/chat_page.dart';
+import 'chat/offline_outbox.dart';
 import 'app_version.dart';
 import 'background/background_receive.dart';
 import 'device/device_identity.dart';
@@ -174,6 +175,12 @@ class _DeviceListPageState extends State<DeviceListPage>
   final Set<String> _removedDeviceIds = {};
   final TrustedDeviceStore _trustedStore = TrustedDeviceStore();
   final Set<String> _trustedDeviceIds = {};
+  final KnownDevicePlatformStore _platformStore = KnownDevicePlatformStore();
+  final Map<String, String> _knownPlatforms = {};
+  final Set<String> _flushingPeers = {};
+  List<DiscoveredDevice> _onlineDevices = const [];
+  Timer? _outboxTimer;
+  int _outboxSequence = 0;
   final Map<String, String> _removedDeviceNames = {};
   PairingEndpoint? _savedPairing;
   List<DiscoveredDevice> _localDevices = const [];
@@ -307,6 +314,12 @@ class _DeviceListPageState extends State<DeviceListPage>
     unawaited(_loadRemovedDevices());
     unawaited(_startTransferServer());
     unawaited(_applyBackgroundReceive());
+    // A peer can stay listed for a few seconds after it became unreachable;
+    // retry queued items periodically, not only when the list changes.
+    _outboxTimer = Timer.periodic(
+      const Duration(seconds: 30),
+      (_) => _scheduleOutboxFlush(),
+    );
     unawaited(_configureRemoteRelay());
     _startRemoteReconnectTimer();
     _scheduleUpdateChecks();
@@ -478,6 +491,9 @@ class _DeviceListPageState extends State<DeviceListPage>
       _chatNotifiers[entry.key]?.value = List.unmodifiable(entry.value);
     }
     await _loadTrustedDevices();
+    _knownPlatforms.addAll(await _platformStore.load());
+    // Show offline peers from history and send whatever is still queued.
+    if (mounted) setState(_mergeDevices);
   }
 
   /// Loads the trusted list and, on the first run with it, trusts every
@@ -568,6 +584,7 @@ class _DeviceListPageState extends State<DeviceListPage>
       _backgroundServiceRunning = await BackgroundReceive.start(
         askPermission: askPermission,
       );
+      await BackgroundReceive.logStatus();
     } else {
       _backgroundServiceRunning = false;
       await BackgroundReceive.stop();
@@ -591,11 +608,210 @@ class _DeviceListPageState extends State<DeviceListPage>
   }
 
   void _mergeDevices() {
-    _devices = mergeDiscoveredDevices(
+    _onlineDevices = mergeDiscoveredDevices(
       localDevices: _localDevices,
       pairedDevices: _pairedDevices,
       remoteDevices: _remoteDevices,
     ).where((device) => !_removedDeviceIds.contains(device.deviceId)).toList();
+    _rememberPlatforms(_onlineDevices);
+    _devices = withOfflineKnownDevices(
+      online: _onlineDevices,
+      history: _chatHistory,
+      platforms: _knownPlatforms,
+      removed: _removedDeviceIds,
+    );
+    _scheduleOutboxFlush();
+  }
+
+  DiscoveredDevice? _onlineDeviceFor(String deviceId) {
+    for (final device in _onlineDevices) {
+      if (device.deviceId == deviceId) return device;
+    }
+    return null;
+  }
+
+  void _rememberPlatforms(List<DiscoveredDevice> devices) {
+    var changed = false;
+    for (final device in devices) {
+      if (_knownPlatforms[device.deviceId] != device.platform) {
+        _knownPlatforms[device.deviceId] = device.platform;
+        changed = true;
+      }
+    }
+    if (changed) unawaited(_platformStore.save(_knownPlatforms));
+  }
+
+  Map<String, int> get _queuedCounts => {
+    for (final entry in _chatHistory.entries)
+      if (entry.value.any((message) => message.isQueued))
+        entry.key: entry.value.where((message) => message.isQueued).length,
+  };
+
+  // ------------------------------------------------------------ offline outbox
+
+  /// Sends queued items to every peer that is online again; also expires
+  /// items older than [outboxMaxAge]. Runs on device changes and every 30 s.
+  void _scheduleOutboxFlush() {
+    final now = DateTime.now();
+    for (final entry in _chatHistory.entries) {
+      for (final message
+          in entry.value.where((item) => isOutboxExpired(item, now)).toList()) {
+        _updateChatMessage(
+          message.withDelivery(
+            ChatDeliveryState.failed,
+            note: '对方 7 天没有上线，已取消发送',
+          ),
+        );
+      }
+      if (!entry.value.any((message) => message.isQueued)) continue;
+      if (_onlineDeviceFor(entry.key) == null) continue;
+      unawaited(_flushOutbox(entry.key));
+    }
+  }
+
+  Future<void> _flushOutbox(String peerId) async {
+    if (!_flushingPeers.add(peerId)) return;
+    try {
+      while (mounted) {
+        final device = _onlineDeviceFor(peerId);
+        if (device == null) return;
+        final queued =
+            (_chatHistory[peerId] ?? const <ChatMessage>[])
+                .where((message) => message.isQueued)
+                .toList()
+              ..sort((left, right) => left.sentAt.compareTo(right.sentAt));
+        if (queued.isEmpty) return;
+        final next = queued.first;
+        try {
+          if (next.kind == ChatMessageKind.text) {
+            await _sendTextNow(device, next.text ?? '');
+          } else {
+            final filePath = next.filePath;
+            if (filePath == null || !await File(filePath).exists()) {
+              _updateChatMessage(
+                next.withDelivery(
+                  ChatDeliveryState.failed,
+                  note: '文件已不存在，没有发送',
+                ),
+              );
+              continue;
+            }
+            await _sendSelectedFiles(
+              device,
+              [
+                (
+                  name: next.fileName ?? path.basename(filePath),
+                  path: filePath,
+                ),
+              ],
+              (_, _, _) {},
+              queueWhenUnreachable: false,
+            );
+          }
+          // The normal send path recorded the delivered copy.
+          _removeChatMessage(peerId, next.id);
+          await _diagnostics.log(
+            'outbox_delivered peer=${peerId.substring(0, 8)} '
+            'kind=${next.kind.name}',
+          );
+        } on TransferException catch (error) {
+          if (error.unreachable) {
+            await _diagnostics.log(
+              'outbox_still_unreachable peer=${peerId.substring(0, 8)}',
+            );
+            return;
+          }
+          _updateChatMessage(
+            next.withDelivery(ChatDeliveryState.failed, note: error.message),
+          );
+        } catch (error) {
+          _updateChatMessage(
+            next.withDelivery(ChatDeliveryState.failed, note: '$error'),
+          );
+        }
+      }
+    } finally {
+      _flushingPeers.remove(peerId);
+      if (mounted) setState(() {});
+    }
+  }
+
+  int get _queuedTotal => _chatHistory.values
+      .expand((messages) => messages)
+      .where((message) => message.isQueued)
+      .length;
+
+  Future<void> _queueOutgoing(
+    DiscoveredDevice device, {
+    String? text,
+    String? filePath,
+    String? fileName,
+  }) async {
+    if (_queuedTotal >= outboxLimit) {
+      throw const TransferException('排队等待发送的内容已经有 $outboxLimit 条，请等对方上线后再发');
+    }
+    int? fileSize;
+    if (filePath != null) {
+      final file = File(filePath);
+      if (!await file.exists()) {
+        throw TransferException('文件不存在或无法读取：$filePath');
+      }
+      fileSize = await file.length();
+    }
+    _outboxSequence++;
+    _appendChat(
+      ChatMessage(
+        id: 'queued-${DateTime.now().microsecondsSinceEpoch}-$_outboxSequence',
+        peerId: device.deviceId,
+        peerName: device.displayName,
+        senderId: widget.identity.deviceId,
+        senderName: widget.identity.displayName,
+        kind: text != null ? ChatMessageKind.text : ChatMessageKind.file,
+        sentAt: DateTime.now(),
+        isOutgoing: true,
+        text: text,
+        fileName: fileName,
+        filePath: filePath,
+        displayLocation: filePath,
+        fileSize: fileSize,
+        deliveryState: ChatDeliveryState.queued,
+      ),
+    );
+    await _diagnostics.log(
+      'outbox_queued peer=${device.deviceId.substring(0, 8)} '
+      'kind=${text != null ? 'text' : 'file'}',
+    );
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _queueFiles(
+    DiscoveredDevice device,
+    Iterable<({String name, String path})> files,
+  ) async {
+    for (final file in files) {
+      await _queueOutgoing(device, filePath: file.path, fileName: file.name);
+    }
+  }
+
+  void _updateChatMessage(ChatMessage updated) {
+    final conversation = _chatHistory[updated.peerId];
+    if (conversation == null) return;
+    final index = conversation.indexWhere(
+      (message) => message.id == updated.id,
+    );
+    if (index < 0) return;
+    conversation[index] = updated;
+    _messagesFor(updated.peerId).value = List.unmodifiable(conversation);
+    unawaited(_chatStore.save(_chatHistory.values.expand((items) => items)));
+  }
+
+  void _removeChatMessage(String peerId, String messageId) {
+    final conversation = _chatHistory[peerId];
+    if (conversation == null) return;
+    conversation.removeWhere((message) => message.id == messageId);
+    _messagesFor(peerId).value = List.unmodifiable(conversation);
+    unawaited(_chatStore.save(_chatHistory.values.expand((items) => items)));
+    if (mounted) setState(() {});
   }
 
   Future<void> _restoreRemovedDevice(
@@ -1127,6 +1343,7 @@ class _DeviceListPageState extends State<DeviceListPage>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _outboxTimer?.cancel();
     _updateCheckTimer?.cancel();
     _updatePeriodicTimer?.cancel();
     _devicesSubscription?.cancel();
@@ -1289,7 +1506,7 @@ class _DeviceListPageState extends State<DeviceListPage>
   }
 
   Future<void> _sendFiles(
-    DiscoveredDevice device,
+    DiscoveredDevice requested,
     void Function(String fileName, int sentBytes, int totalBytes) onProgress, {
     Iterable<String>? filePaths,
     TransferCancellationToken? cancellation,
@@ -1311,8 +1528,30 @@ class _DeviceListPageState extends State<DeviceListPage>
           .toList();
     }
     if (selectedFiles.isEmpty) return;
-    await _trustDevice(device.deviceId, reason: 'sent_file');
+    await _trustDevice(requested.deviceId, reason: 'sent_file');
+    final device = _onlineDeviceFor(requested.deviceId);
+    if (device == null) {
+      await _queueFiles(requested, selectedFiles);
+      return;
+    }
+    await _sendSelectedFiles(
+      device,
+      selectedFiles,
+      onProgress,
+      cancellation: cancellation,
+      queueWhenUnreachable: true,
+    );
+  }
 
+  /// [queueWhenUnreachable]: a file that fails before any byte left (peer
+  /// gone) is queued together with the ones after it instead of failing.
+  Future<void> _sendSelectedFiles(
+    DiscoveredDevice device,
+    List<({String name, String path})> selectedFiles,
+    void Function(String fileName, int sentBytes, int totalBytes) onProgress, {
+    TransferCancellationToken? cancellation,
+    required bool queueWhenUnreachable,
+  }) async {
     if (device.isRemote) {
       await _sendRemoteFiles(
         device,
@@ -1323,7 +1562,8 @@ class _DeviceListPageState extends State<DeviceListPage>
       return;
     }
 
-    for (final selectedFile in selectedFiles) {
+    for (var index = 0; index < selectedFiles.length; index++) {
+      final selectedFile = selectedFiles[index];
       cancellation?.throwIfCancelled();
       final file = File(selectedFile.path);
       if (!await file.exists()) {
@@ -1380,7 +1620,7 @@ class _DeviceListPageState extends State<DeviceListPage>
             cancellation: cancellation,
           );
         } else {
-          throw const TransferException('设备连接已经断开，请等待重新连接');
+          throw const TransferException('设备连接已经断开，请等待重新连接', unreachable: true);
         }
       } catch (error, stackTrace) {
         await _diagnostics.log(
@@ -1388,6 +1628,13 @@ class _DeviceListPageState extends State<DeviceListPage>
           error: error,
           stackTrace: stackTrace,
         );
+        if (queueWhenUnreachable &&
+            error is TransferException &&
+            error.unreachable &&
+            sentBytes == 0) {
+          await _queueFiles(device, selectedFiles.sublist(index));
+          return;
+        }
         rethrow;
       }
       unawaited(_diagnostics.log('send_complete bytes=$fileSize'));
@@ -1414,8 +1661,24 @@ class _DeviceListPageState extends State<DeviceListPage>
     }
   }
 
-  Future<void> _sendText(DiscoveredDevice device, String text) async {
-    await _trustDevice(device.deviceId, reason: 'sent_text');
+  /// Sends now when the peer is reachable; otherwise queues the text until it
+  /// is seen again (see [_flushOutbox]).
+  Future<void> _sendText(DiscoveredDevice requested, String text) async {
+    await _trustDevice(requested.deviceId, reason: 'sent_text');
+    final device = _onlineDeviceFor(requested.deviceId);
+    if (device == null) {
+      await _queueOutgoing(requested, text: text.trim());
+      return;
+    }
+    try {
+      await _sendTextNow(device, text);
+    } on TransferException catch (error) {
+      if (!error.unreachable) rethrow;
+      await _queueOutgoing(requested, text: text.trim());
+    }
+  }
+
+  Future<void> _sendTextNow(DiscoveredDevice device, String text) async {
     if (device.isRemote) {
       final trimmed = text.trim();
       final uri = Uri.tryParse(trimmed);
@@ -1465,7 +1728,7 @@ class _DeviceListPageState extends State<DeviceListPage>
         text: text,
       );
     } else {
-      throw const TransferException('设备连接已经断开，请等待重新连接');
+      throw const TransferException('设备连接已经断开，请等待重新连接', unreachable: true);
     }
     _appendChat(
       ChatMessage(
@@ -1756,6 +2019,8 @@ class _DeviceListPageState extends State<DeviceListPage>
           onClearConversation: (deleteCache) =>
               _clearConversation(device.deviceId, deleteCache: deleteCache),
           onRemoveDevice: () => _removeDevice(device),
+          onDiscardUndelivered: (messageId) =>
+              _removeChatMessage(device.deviceId, messageId),
           onCancelIncomingTransfer: device.isRemote
               ? (transferId) =>
                     _cancelIncomingRemoteTransfer(device.deviceId, transferId)
@@ -1787,6 +2052,8 @@ class _DeviceListPageState extends State<DeviceListPage>
     }
     _messagesFor(deviceId).value = const [];
     await _chatStore.save(_chatHistory.values.expand((items) => items));
+    // An offline peer with no history left drops out of the list.
+    if (mounted) setState(_mergeDevices);
   }
 
   Future<void> _removeDevice(DiscoveredDevice device) async {
@@ -1865,6 +2132,7 @@ class _DeviceListPageState extends State<DeviceListPage>
       onDismissRemoteError: () => setState(() => _remoteError = null),
       pendingSharedFileCount: _pendingSharedFiles.length,
       onDiscardSharedFiles: _discardSharedFiles,
+      queuedCounts: _queuedCounts,
     );
   }
 }
