@@ -10,6 +10,7 @@ import 'package:path_provider/path_provider.dart';
 import 'chat/chat_message.dart';
 import 'chat/chat_page.dart';
 import 'app_version.dart';
+import 'background/background_receive.dart';
 import 'device/device_identity.dart';
 import 'diagnostics/diagnostic_log_service.dart';
 import 'discovery/discovered_device.dart';
@@ -21,6 +22,7 @@ import 'pairing/pairing_relay.dart';
 import 'remote/remote_access_settings.dart';
 import 'settings/app_settings.dart';
 import 'settings/settings_page.dart';
+import 'settings/trusted_devices.dart';
 import 'storage/received_file_service.dart';
 import 'transfer/transfer_client.dart';
 import 'transfer/transfer_models.dart';
@@ -90,10 +92,7 @@ class _LanTransferAppState extends State<LanTransferApp> {
       title: appVersionLabel,
       debugShowCheckedModeBanner: false,
       theme: buildAppTheme(_settings.themeColor.seedColor, Brightness.light),
-      darkTheme: buildAppTheme(
-        _settings.themeColor.seedColor,
-        Brightness.dark,
-      ),
+      darkTheme: buildAppTheme(_settings.themeColor.seedColor, Brightness.dark),
       themeMode: _settings.themeMode.materialMode,
       home: DeviceListPage(
         identity: _identity,
@@ -173,6 +172,8 @@ class _DeviceListPageState extends State<DeviceListPage>
   final List<String> _pendingSharedFiles = [];
   final Set<String> _sharedCachePaths = {};
   final Set<String> _removedDeviceIds = {};
+  final TrustedDeviceStore _trustedStore = TrustedDeviceStore();
+  final Set<String> _trustedDeviceIds = {};
   final Map<String, String> _removedDeviceNames = {};
   PairingEndpoint? _savedPairing;
   List<DiscoveredDevice> _localDevices = const [];
@@ -257,9 +258,12 @@ class _DeviceListPageState extends State<DeviceListPage>
     _pairedProgressSubscription = _pairingRelay.incomingProgress.listen(
       _receiveProgress,
     );
+    // The other device paired with this one using its pairing code.
     _restoreRequestSubscription = _pairingRelay.restoreRequests.listen(
-      (deviceId) =>
-          unawaited(_restoreRemovedDevice(deviceId, reason: 'manual_pairing')),
+      (deviceId) => unawaited(() async {
+        await _restoreRemovedDevice(deviceId, reason: 'manual_pairing');
+        await _trustDevice(deviceId, reason: 'paired_by_peer');
+      }()),
     );
     _remotePeersSubscription = _remoteRelay.peerUpdates.listen((peers) {
       if (!mounted) return;
@@ -302,6 +306,7 @@ class _DeviceListPageState extends State<DeviceListPage>
     unawaited(_loadChatHistory());
     unawaited(_loadRemovedDevices());
     unawaited(_startTransferServer());
+    unawaited(_applyBackgroundReceive());
     unawaited(_configureRemoteRelay());
     _startRemoteReconnectTimer();
     _scheduleUpdateChecks();
@@ -357,7 +362,10 @@ class _DeviceListPageState extends State<DeviceListPage>
     });
   }
 
-  bool get _shouldRunNetworkWork => !Platform.isAndroid || _androidInForeground;
+  bool get _shouldRunNetworkWork =>
+      !Platform.isAndroid ||
+      _androidInForeground ||
+      _keepsReceivingInBackground;
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
@@ -384,7 +392,13 @@ class _DeviceListPageState extends State<DeviceListPage>
   Future<void> _pauseAndroidNetworkWork(AppLifecycleState state) async {
     if (!_androidInForeground) return;
     _androidInForeground = false;
-    await _diagnostics.log('app_lifecycle_paused state=${state.name}');
+    final keepRunning = _keepsReceivingInBackground;
+    await _diagnostics.log(
+      'app_lifecycle_paused state=${state.name} keep_receiving=$keepRunning',
+    );
+    // With background receiving on, the foreground service keeps the process
+    // alive, so discovery and reconnects simply carry on.
+    if (keepRunning) return;
     _stopReconnectTimers();
     await _discovery.pause();
   }
@@ -463,6 +477,30 @@ class _DeviceListPageState extends State<DeviceListPage>
       entry.value.sort((left, right) => left.sentAt.compareTo(right.sentAt));
       _chatNotifiers[entry.key]?.value = List.unmodifiable(entry.value);
     }
+    await _loadTrustedDevices();
+  }
+
+  /// Loads the trusted list and, on the first run with it, trusts every
+  /// device the user has already sent something to.
+  Future<void> _loadTrustedDevices() async {
+    _trustedDeviceIds.addAll(await _trustedStore.load());
+    final before = _trustedDeviceIds.length;
+    for (final entry in _chatHistory.entries) {
+      if (entry.value.any((message) => message.isOutgoing)) {
+        _trustedDeviceIds.add(entry.key);
+      }
+    }
+    if (_trustedDeviceIds.length != before) {
+      await _trustedStore.save(_trustedDeviceIds);
+    }
+  }
+
+  Future<void> _trustDevice(String deviceId, {required String reason}) async {
+    if (!_trustedDeviceIds.add(deviceId)) return;
+    await _trustedStore.save(_trustedDeviceIds);
+    await _diagnostics.log(
+      'device_trusted peer=${deviceId.substring(0, 8)} reason=$reason',
+    );
   }
 
   ValueNotifier<List<ChatMessage>> _messagesFor(String peerId) {
@@ -512,6 +550,44 @@ class _DeviceListPageState extends State<DeviceListPage>
     conversation.sort((left, right) => left.sentAt.compareTo(right.sentAt));
     _messagesFor(message.peerId).value = List.unmodifiable(conversation);
     unawaited(_chatStore.save(_chatHistory.values.expand((items) => items)));
+    if (!message.isOutgoing) _notifyIfInBackground(message);
+  }
+
+  /// Only when the foreground service really started: it holds the multicast
+  /// lock that makes background discovery safe (see DiscoveryService.pause).
+  bool get _keepsReceivingInBackground =>
+      Platform.isAndroid &&
+      widget.settings.androidBackgroundReceive &&
+      _backgroundServiceRunning;
+
+  bool _backgroundServiceRunning = false;
+
+  Future<void> _applyBackgroundReceive({bool askPermission = false}) async {
+    if (!Platform.isAndroid) return;
+    if (widget.settings.androidBackgroundReceive) {
+      _backgroundServiceRunning = await BackgroundReceive.start(
+        askPermission: askPermission,
+      );
+    } else {
+      _backgroundServiceRunning = false;
+      await BackgroundReceive.stop();
+    }
+  }
+
+  /// While the app is in the background (background receiving on), a system
+  /// notification is the only sign that something arrived.
+  void _notifyIfInBackground(ChatMessage message) {
+    if (!_keepsReceivingInBackground || _androidInForeground) return;
+    final isText = message.kind == ChatMessageKind.text;
+    final preview = isText
+        ? (message.text ?? '').trim()
+        : (message.fileName ?? '一个文件');
+    unawaited(
+      BackgroundReceive.notify(
+        '收到 ${message.peerName} 的${isText ? '消息' : '文件'}',
+        preview.length > 80 ? '${preview.substring(0, 80)}…' : preview,
+      ),
+    );
   }
 
   void _mergeDevices() {
@@ -1014,6 +1090,7 @@ class _DeviceListPageState extends State<DeviceListPage>
       rethrow;
     }
     await _restoreRemovedDevice(device.deviceId, reason: 'manual_pairing');
+    await _trustDevice(device.deviceId, reason: 'paired');
     await _pairingStore.saveEndpoint(endpoint);
     _savedPairing = endpoint;
   }
@@ -1040,6 +1117,10 @@ class _DeviceListPageState extends State<DeviceListPage>
     if (oldWidget.remoteSettings != widget.remoteSettings ||
         oldWidget.identity != widget.identity) {
       unawaited(_configureRemoteRelay());
+    }
+    if (oldWidget.settings.androidBackgroundReceive !=
+        widget.settings.androidBackgroundReceive) {
+      unawaited(_applyBackgroundReceive(askPermission: true));
     }
   }
 
@@ -1096,6 +1177,22 @@ class _DeviceListPageState extends State<DeviceListPage>
       return;
     }
 
+    final automatic = shouldAutoAccept(
+      widget.settings.autoAcceptMode,
+      trusted: _trustedDeviceIds.contains(request.senderId),
+    );
+    if (automatic) {
+      unawaited(
+        _diagnostics.log(
+          'incoming_transfer_auto_accepted '
+          'mode=${widget.settings.autoAcceptMode.name} '
+          'bytes=${request.fileSize}',
+        ),
+      );
+      await _acceptIncomingTransfer(request);
+      return;
+    }
+
     final navigator = Navigator.of(context);
     final dialog = showDialog<bool>(
       context: context,
@@ -1138,7 +1235,11 @@ class _DeviceListPageState extends State<DeviceListPage>
       request.reject();
       return;
     }
+    await _trustDevice(request.senderId, reason: 'accepted_file');
+    await _acceptIncomingTransfer(request);
+  }
 
+  Future<void> _acceptIncomingTransfer(IncomingTransferRequest request) async {
     try {
       final destination = await _receiveDirectory();
       await _restoreRemovedDevice(
@@ -1210,6 +1311,7 @@ class _DeviceListPageState extends State<DeviceListPage>
           .toList();
     }
     if (selectedFiles.isEmpty) return;
+    await _trustDevice(device.deviceId, reason: 'sent_file');
 
     if (device.isRemote) {
       await _sendRemoteFiles(
@@ -1313,6 +1415,7 @@ class _DeviceListPageState extends State<DeviceListPage>
   }
 
   Future<void> _sendText(DiscoveredDevice device, String text) async {
+    await _trustDevice(device.deviceId, reason: 'sent_text');
     if (device.isRemote) {
       final trimmed = text.trim();
       final uri = Uri.tryParse(trimmed);
@@ -1696,6 +1799,9 @@ class _DeviceListPageState extends State<DeviceListPage>
     _removedDeviceIds.add(device.deviceId);
     _removedDeviceNames[device.deviceId] = device.displayName;
     await _saveRemovedDevices();
+    if (_trustedDeviceIds.remove(device.deviceId)) {
+      await _trustedStore.save(_trustedDeviceIds);
+    }
     if (mounted) {
       setState(_mergeDevices);
     }

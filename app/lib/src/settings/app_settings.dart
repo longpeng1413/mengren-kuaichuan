@@ -31,6 +31,19 @@ enum AppThemeMode {
   };
 }
 
+/// Whether incoming LAN files start without the "接收文件？" dialog. Remote
+/// (VPS) files never ask; they are already capped at 200 MiB.
+enum AutoAcceptMode {
+  all('局域网内所有设备', '局域网里任何设备发来的文件都直接接收'),
+  known('只限连接过的设备', '给它发过东西、配对过或手动接收过它文件的设备直接接收，陌生设备仍会询问'),
+  ask('每次都询问', '每个文件都弹窗确认，60 秒没点就自动拒绝');
+
+  const AutoAcceptMode(this.label, this.description);
+
+  final String label;
+  final String description;
+}
+
 class AppSettings {
   const AppSettings({
     this.themeColor = AppThemeColor.ruby,
@@ -40,6 +53,8 @@ class AppSettings {
     this.androidTreeUri,
     this.androidSaveLabel = '系统下载/猛人快传',
     this.autoCheckUpdates = true,
+    this.autoAcceptMode = AutoAcceptMode.known,
+    this.androidBackgroundReceive = false,
   });
 
   final AppThemeColor themeColor;
@@ -49,6 +64,11 @@ class AppSettings {
   final String? androidTreeUri;
   final String androidSaveLabel;
   final bool autoCheckUpdates;
+  final AutoAcceptMode autoAcceptMode;
+
+  /// Android only: keep a foreground service so discovery, the receiver and
+  /// the VPS connection keep running while the app is in the background.
+  final bool androidBackgroundReceive;
 
   bool get usesCustomAndroidDirectory => androidTreeUri != null;
 
@@ -60,6 +80,8 @@ class AppSettings {
     String? androidTreeUri,
     String? androidSaveLabel,
     bool? autoCheckUpdates,
+    AutoAcceptMode? autoAcceptMode,
+    bool? androidBackgroundReceive,
     bool clearAndroidDirectory = false,
     bool clearWindowsDirectory = false,
   }) {
@@ -77,6 +99,9 @@ class AppSettings {
           ? '系统下载/猛人快传'
           : androidSaveLabel ?? this.androidSaveLabel,
       autoCheckUpdates: autoCheckUpdates ?? this.autoCheckUpdates,
+      autoAcceptMode: autoAcceptMode ?? this.autoAcceptMode,
+      androidBackgroundReceive:
+          androidBackgroundReceive ?? this.androidBackgroundReceive,
     );
   }
 }
@@ -89,6 +114,8 @@ class AppSettingsStore {
   static const _androidTreeKey = 'settings_android_tree_uri';
   static const _androidLabelKey = 'settings_android_save_label';
   static const _autoCheckUpdatesKey = 'settings_auto_check_updates';
+  static const _autoAcceptKey = 'settings_auto_accept_mode';
+  static const _backgroundReceiveKey = 'settings_android_background_receive';
 
   Future<AppSettings> load() async {
     final preferences = await SharedPreferences.getInstance();
@@ -100,6 +127,10 @@ class AppSettingsStore {
     final themeMode = AppThemeMode.values.where(
       (candidate) => candidate.name == themeModeName,
     );
+    final autoAcceptName = preferences.getString(_autoAcceptKey);
+    final autoAccept = AutoAcceptMode.values.where(
+      (candidate) => candidate.name == autoAcceptName,
+    );
     return AppSettings(
       themeColor: theme.isEmpty ? AppThemeColor.ruby : theme.first,
       themeMode: themeMode.isEmpty ? AppThemeMode.light : themeMode.first,
@@ -108,6 +139,11 @@ class AppSettingsStore {
       androidTreeUri: preferences.getString(_androidTreeKey),
       androidSaveLabel: preferences.getString(_androidLabelKey) ?? '系统下载/猛人快传',
       autoCheckUpdates: preferences.getBool(_autoCheckUpdatesKey) ?? true,
+      autoAcceptMode: autoAccept.isEmpty
+          ? AutoAcceptMode.known
+          : autoAccept.first,
+      androidBackgroundReceive:
+          preferences.getBool(_backgroundReceiveKey) ?? false,
     );
   }
 
@@ -131,5 +167,10 @@ class AppSettingsStore {
     }
     await preferences.setString(_androidLabelKey, settings.androidSaveLabel);
     await preferences.setBool(_autoCheckUpdatesKey, settings.autoCheckUpdates);
+    await preferences.setString(_autoAcceptKey, settings.autoAcceptMode.name);
+    await preferences.setBool(
+      _backgroundReceiveKey,
+      settings.androidBackgroundReceive,
+    );
   }
 }

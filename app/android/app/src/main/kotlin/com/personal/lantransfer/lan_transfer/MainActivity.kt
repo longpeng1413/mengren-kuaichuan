@@ -1,5 +1,6 @@
 package com.personal.lantransfer.lan_transfer
 
+import android.Manifest
 import android.app.Activity
 import android.app.PendingIntent
 import android.content.ContentValues
@@ -14,6 +15,8 @@ import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.os.Bundle
+import android.os.PowerManager
+import android.content.pm.PackageManager
 import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.provider.OpenableColumns
@@ -38,6 +41,8 @@ class MainActivity : FlutterActivity() {
     companion object {
         private const val FILE_CHANNEL = "com.personal.lantransfer.lan_transfer/files"
         private const val UPDATE_CHANNEL = "com.personal.lantransfer.lan_transfer/update"
+        private const val BACKGROUND_CHANNEL = "com.personal.lantransfer.lan_transfer/background"
+        private const val NOTIFICATION_PERMISSION_REQUEST = 7301
         private const val DIRECTORY_REQUEST = 8231
         private const val MAX_DIAGNOSTIC_FILE_BYTES = 1024 * 1024L
         private const val DIAGNOSTIC_RETENTION_MS = 7L * 24 * 60 * 60 * 1000
@@ -89,6 +94,7 @@ class MainActivity : FlutterActivity() {
     private var pendingDirectoryResult: MethodChannel.Result? = null
     private var fileChannel: MethodChannel? = null
     private var updateChannel: MethodChannel? = null
+    private var backgroundChannel: MethodChannel? = null
     private val pendingSharedFiles = mutableListOf<String>()
     private val shareImportExecutor: ExecutorService = Executors.newSingleThreadExecutor { work ->
         Thread(work, "mengren-share-import")
@@ -140,6 +146,44 @@ class MainActivity : FlutterActivity() {
                     }
                     "installApk" -> installApk(call.argument<String>("path"), result)
                     "systemProxy" -> result.success(currentSystemProxy())
+                    else -> result.notImplemented()
+                }
+            }
+        }
+        backgroundChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, BACKGROUND_CHANNEL).also { channel ->
+            channel.setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "start" -> {
+                        try {
+                            if (call.argument<Boolean>("askPermission") == true) {
+                                requestNotificationPermission()
+                            }
+                            BackgroundReceiveService.start(this)
+                            nativeLog("background_receive_started")
+                            result.success(null)
+                        } catch (error: Exception) {
+                            nativeLog("background_receive_start_failed", error)
+                            result.error("start_failed", error.message, null)
+                        }
+                    }
+                    "stop" -> {
+                        BackgroundReceiveService.stop(this)
+                        nativeLog("background_receive_stopped")
+                        result.success(null)
+                    }
+                    "notify" -> {
+                        BackgroundReceiveService.notifyIncoming(
+                            this,
+                            call.argument<String>("title") ?: "猛人快传",
+                            call.argument<String>("text") ?: "",
+                        )
+                        result.success(null)
+                    }
+                    "isIgnoringBatteryOptimizations" -> result.success(isIgnoringBatteryOptimizations())
+                    "requestIgnoreBatteryOptimizations" -> {
+                        requestIgnoreBatteryOptimizations()
+                        result.success(null)
+                    }
                     else -> result.notImplemented()
                 }
             }
@@ -567,6 +611,37 @@ class MainActivity : FlutterActivity() {
     private fun canInstallPackages(): Boolean =
         Build.VERSION.SDK_INT < Build.VERSION_CODES.O || packageManager.canRequestPackageInstalls()
 
+    private fun requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) {
+            return
+        }
+        requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), NOTIFICATION_PERMISSION_REQUEST)
+    }
+
+    private fun isIgnoringBatteryOptimizations(): Boolean {
+        val power = getSystemService(Context.POWER_SERVICE) as PowerManager
+        return power.isIgnoringBatteryOptimizations(packageName)
+    }
+
+    /** Without this, Doze suspends networking a while after the screen goes off. */
+    private fun requestIgnoreBatteryOptimizations() {
+        try {
+            startActivity(
+                Intent(
+                    Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                    Uri.parse("package:$packageName"),
+                ),
+            )
+        } catch (error: Exception) {
+            nativeLog("battery_optimization_request_failed", error)
+            try {
+                startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+            } catch (_: Exception) {
+            }
+        }
+    }
+
     /**
      * The HTTP proxy browsers use: the Wi-Fi proxy or the one a proxy app
      * (for example Clash's "system proxy") publishes. Dart's HttpClient does
@@ -679,13 +754,31 @@ class MainActivity : FlutterActivity() {
         super.onStop()
     }
 
+    /**
+     * With background receiving on, Back at the home screen only moves the
+     * app to the background: finishing the activity would destroy the Flutter
+     * engine that does the receiving.
+     */
+    override fun popSystemNavigator(): Boolean {
+        if (BackgroundReceiveService.isRunning) {
+            moveTaskToBack(true)
+            return true
+        }
+        return super.popSystemNavigator()
+    }
+
     override fun onDestroy() {
         nativeLog("activity_on_destroy")
         activityDestroyed = true
+        // The engine goes away with the activity, so the service notification
+        // would otherwise claim to receive while nothing is listening.
+        if (isFinishing) BackgroundReceiveService.stop(this)
         fileChannel?.setMethodCallHandler(null)
         fileChannel = null
         updateChannel?.setMethodCallHandler(null)
         updateChannel = null
+        backgroundChannel?.setMethodCallHandler(null)
+        backgroundChannel = null
         if (activeActivity?.get() === this) activeActivity = null
         shareImportExecutor.shutdownNow()
         super.onDestroy()

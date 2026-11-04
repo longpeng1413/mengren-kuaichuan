@@ -47,6 +47,25 @@ Copy-Item -Path (Join-Path $source '*') -Destination $staging -Recurse -Force
 # Keep Flutter's internal build target ASCII; expose the product name in the
 # portable package. Runtime startup uses Platform.resolvedExecutable.
 Rename-Item -LiteralPath (Join-Path $staging 'lan_transfer.exe') -NewName '猛人快传.exe'
+# Ship the VC++ runtime next to the EXE (app-local deployment). Binaries built
+# with a newer MSVC can crash on a PC whose installed runtime is older, so the
+# package must not depend on what each computer happens to have.
+$vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+$vsRoot = if (Test-Path -LiteralPath $vswhere) {
+    & $vswhere -latest -products * -property installationPath
+}
+$crt = if ($vsRoot) {
+    Get-ChildItem -Path (Join-Path $vsRoot 'VC\Redist\MSVC\*\x64\Microsoft.VC*.CRT') `
+        -Directory -ErrorAction SilentlyContinue |
+        Sort-Object FullName -Descending |
+        Select-Object -First 1
+}
+if ($null -eq $crt) {
+    throw 'VC++ runtime (VC\Redist\MSVC\...\x64\Microsoft.VC*.CRT) was not found.'
+}
+foreach ($dll in @('msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll')) {
+    Copy-Item -LiteralPath (Join-Path $crt.FullName $dll) -Destination $staging -Force
+}
 Copy-Item `
     -Path (Join-Path $projectRoot 'packaging\windows\enable_lan_access.*') `
     -Destination $staging `

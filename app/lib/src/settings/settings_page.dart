@@ -7,6 +7,7 @@ import 'package:launch_at_startup/launch_at_startup.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../app_version.dart';
+import '../background/background_receive.dart';
 import '../diagnostics/diagnostic_log_service.dart';
 import '../pairing/pairing_endpoint.dart';
 import '../remote/remote_access_settings.dart';
@@ -409,6 +410,79 @@ class _SettingsPageState extends State<SettingsPage> {
     }
   }
 
+  Future<void> _chooseAutoAcceptMode() async {
+    final selected = await showDialog<AutoAcceptMode>(
+      context: context,
+      builder: (context) => SimpleDialog(
+        title: const Text('自动接收文件'),
+        children: [
+          RadioGroup<AutoAcceptMode>(
+            groupValue: _settings.autoAcceptMode,
+            onChanged: (value) => Navigator.pop(context, value),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                for (final mode in AutoAcceptMode.values)
+                  RadioListTile<AutoAcceptMode>(
+                    key: Key('auto_accept_${mode.name}'),
+                    value: mode,
+                    title: Text(mode.label),
+                    subtitle: Text(mode.description),
+                  ),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 8, 24, 4),
+            child: Text(
+              '只影响局域网收文件；文字消息一直直接接收。公网 VPS 中转收到的文件也一直直接接收'
+              '（单个不超过 200 MiB）。在咖啡店等公共 Wi-Fi 上，建议选“每次都询问”。',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                height: 1.5,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+    if (selected == null || selected == _settings.autoAcceptMode) return;
+    await _save(_settings.copyWith(autoAcceptMode: selected));
+  }
+
+  Future<void> _toggleBackgroundReceive(bool enabled) async {
+    await _save(_settings.copyWith(androidBackgroundReceive: enabled));
+    if (!enabled || !mounted) return;
+    // Without this exemption Doze cuts the network a while after the screen
+    // goes off, even with the foreground service running.
+    if (await BackgroundReceive.isIgnoringBatteryOptimizations()) return;
+    if (!mounted) return;
+    final allow = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('允许猛人快传后台运行？'),
+        content: const Text(
+          '手机熄屏一段时间后，系统会为了省电断开后台应用的网络。'
+          '点“去允许”，在弹出的窗口里选择允许，熄屏后也能继续接收。\n\n'
+          '魅族、小米等手机可能还需要在系统的“应用管理 → 猛人快传 → 耗电/后台”里设为“允许后台运行”。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('以后再说'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('去允许'),
+          ),
+        ],
+      ),
+    );
+    if (allow == true) {
+      await BackgroundReceive.requestIgnoreBatteryOptimizations();
+    }
+  }
+
   void _showError(String message) => _showMessage(message);
 
   @override
@@ -499,6 +573,31 @@ class _SettingsPageState extends State<SettingsPage> {
                         : const Icon(Icons.chevron_right),
                     onTap: _working ? null : _chooseDirectory,
                   ),
+                ],
+              ),
+              _SettingsSection(
+                key: const Key('receive_section'),
+                title: '接收',
+                children: [
+                  _SettingsTile(
+                    key: const Key('auto_accept_mode'),
+                    icon: Icons.move_to_inbox_outlined,
+                    title: '自动接收文件',
+                    subtitle: _settings.autoAcceptMode.label,
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: _chooseAutoAcceptMode,
+                  ),
+                  if (Platform.isAndroid)
+                    _SettingsTile(
+                      key: const Key('background_receive'),
+                      icon: Icons.notifications_active_outlined,
+                      title: '后台持续接收',
+                      subtitle: '切到后台、熄屏也能收文件和消息；通知栏常驻一条提示，耗电稍多',
+                      trailing: Switch(
+                        value: _settings.androidBackgroundReceive,
+                        onChanged: _toggleBackgroundReceive,
+                      ),
+                    ),
                 ],
               ),
               if (AppUpdateService.isSupportedPlatform)
@@ -657,6 +756,17 @@ class _SettingsPageState extends State<SettingsPage> {
                     linkUrl: _relayGuideUrl,
                   ),
                   _HelpTile(
+                    icon: Icons.move_to_inbox_outlined,
+                    title: '自动接收和后台接收',
+                    body:
+                        '自动接收：默认“只限连接过的设备”——你给它发过东西、和它配对过、或手动接收过它文件的设备，'
+                        '发来的文件直接保存；陌生设备第一次发文件仍会询问。设备标识在局域网里是公开广播的，'
+                        '在咖啡店等公共 Wi-Fi 上建议改成“每次都询问”。\n'
+                        '后台持续接收（手机）：打开后切到后台、熄屏也能收，收到时会弹通知；按返回键不会退出，'
+                        '只是回到后台。从最近任务里划掉或手机重启后，需要重新打开猛人快传。'
+                        '魅族、小米等手机还要在系统设置里允许猛人快传后台运行。电脑端隐藏到托盘时本来就一直在接收。',
+                  ),
+                  _HelpTile(
                     icon: Icons.route_outlined,
                     title: '传输时始终显示实际网络路线',
                     body:
@@ -723,9 +833,7 @@ class _SettingsPageState extends State<SettingsPage> {
                         ),
                       ),
                       icon: const Icon(Icons.open_in_new, size: 16),
-                      label: const Text(
-                        'github.com/$officialUpdateRepository',
-                      ),
+                      label: const Text('github.com/$officialUpdateRepository'),
                     ),
                   ],
                 ),
