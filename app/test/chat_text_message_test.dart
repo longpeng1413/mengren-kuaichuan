@@ -103,10 +103,10 @@ void main() {
   ) async {
     await showMessage(tester, TargetPlatform.windows);
     await rightClick(tester, position(tester, 15));
-    expect(find.text('复制全部'), findsOneWidget);
+    expect(find.text('复制'), findsOneWidget);
     expect(find.text('全选'), findsOneWidget);
     expect(opened, isEmpty);
-    await tester.tap(find.text('复制全部'));
+    await tester.tap(find.text('复制'));
     await tester.pumpAndSettle();
     expect(clipboard, link);
     expect(opened, isEmpty);
@@ -145,7 +145,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(state(tester).textEditingValue.selection.isCollapsed, isFalse);
     expect(find.text('复制选中内容'), findsOneWidget);
-    await tester.tap(find.text('复制全部'));
+    await tester.tap(find.text('复制'));
     await tester.pumpAndSettle();
     expect(clipboard, link);
     expect(opened, isEmpty);

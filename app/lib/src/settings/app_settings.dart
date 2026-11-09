@@ -55,6 +55,7 @@ class AppSettings {
     this.autoCheckUpdates = true,
     this.autoAcceptMode = AutoAcceptMode.known,
     this.androidBackgroundReceive = false,
+    this.silentStartup = true,
   });
 
   final AppThemeColor themeColor;
@@ -70,6 +71,10 @@ class AppSettings {
   /// the VPS connection keep running while the app is in the background.
   final bool androidBackgroundReceive;
 
+  /// Windows: when started at login, stay in the tray without opening the
+  /// main window (the Run entry carries `--silent`).
+  final bool silentStartup;
+
   bool get usesCustomAndroidDirectory => androidTreeUri != null;
 
   AppSettings copyWith({
@@ -82,6 +87,7 @@ class AppSettings {
     bool? autoCheckUpdates,
     AutoAcceptMode? autoAcceptMode,
     bool? androidBackgroundReceive,
+    bool? silentStartup,
     bool clearAndroidDirectory = false,
     bool clearWindowsDirectory = false,
   }) {
@@ -102,6 +108,7 @@ class AppSettings {
       autoAcceptMode: autoAcceptMode ?? this.autoAcceptMode,
       androidBackgroundReceive:
           androidBackgroundReceive ?? this.androidBackgroundReceive,
+      silentStartup: silentStartup ?? this.silentStartup,
     );
   }
 }
@@ -116,6 +123,7 @@ class AppSettingsStore {
   static const _autoCheckUpdatesKey = 'settings_auto_check_updates';
   static const _autoAcceptKey = 'settings_auto_accept_mode';
   static const _backgroundReceiveKey = 'settings_android_background_receive';
+  static const _silentStartupKey = 'settings_silent_startup';
 
   Future<AppSettings> load() async {
     final preferences = await SharedPreferences.getInstance();
@@ -144,6 +152,7 @@ class AppSettingsStore {
           : autoAccept.first,
       androidBackgroundReceive:
           preferences.getBool(_backgroundReceiveKey) ?? false,
+      silentStartup: preferences.getBool(_silentStartupKey) ?? true,
     );
   }
 
@@ -172,5 +181,6 @@ class AppSettingsStore {
       _backgroundReceiveKey,
       settings.androidBackgroundReceive,
     );
+    await preferences.setBool(_silentStartupKey, settings.silentStartup);
   }
 }

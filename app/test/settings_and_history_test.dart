@@ -240,6 +240,9 @@ void main() {
     expect(find.text('传输时始终显示实际网络路线'), findsOneWidget);
     // Help entries start collapsed and open on tap.
     expect(find.textContaining('并不表示本次扫描了二维码'), findsNothing);
+    // It may stop at the bottom edge; bring it fully on screen before tapping.
+    await tester.ensureVisible(find.text('传输时始终显示实际网络路线'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('传输时始终显示实际网络路线'));
     await tester.pumpAndSettle();
     expect(find.textContaining('并不表示本次扫描了二维码'), findsOneWidget);

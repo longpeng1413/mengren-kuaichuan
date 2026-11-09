@@ -17,6 +17,10 @@ class FlutterWindow : public Win32Window {
   explicit FlutterWindow(const flutter::DartProject& project);
   virtual ~FlutterWindow();
 
+  // Silent start (--silent from the login entry): keep the window hidden after
+  // the first frame; the tray icon opens it later.
+  void set_start_hidden(bool hidden) { start_hidden_ = hidden; }
+
  protected:
   // Win32Window:
   bool OnCreate() override;
@@ -34,6 +38,8 @@ class FlutterWindow : public Win32Window {
   // Supplies Windows network adapter prefix lengths to the shared Dart code.
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
       platform_channel_;
+
+  bool start_hidden_ = false;
 };
 
 #endif  // RUNNER_FLUTTER_WINDOW_H_

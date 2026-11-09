@@ -7,7 +7,7 @@
 先完整阅读：
 
 1. `AGENTS.md`
-2. `docs/开发交接说明-v1.8.1.md`、`docs/开发交接说明-v1.8.0.md`、`docs/开发交接说明-v1.7.8.md`、`docs/开发交接说明-v1.7.7.md`
+2. `docs/开发交接说明-v1.10.0.md`、`docs/开发交接说明-v1.9.0.md`、`docs/开发交接说明-v1.8.1.md`、`docs/开发交接说明-v1.8.0.md`、`docs/开发交接说明-v1.7.8.md`、`docs/开发交接说明-v1.7.7.md`
 3. `CHANGELOG.md`
 4. `README.md`
 
@@ -15,6 +15,7 @@
 
 ## 当前状态
 
+- 开发中测试版：v1.10.0+34（2026-11-09，未发布）：消息长按复制/转发/引用/删除、输入框粘贴图片和文件、图片只显示小缩略图、Windows 静默启动。见 `docs/开发交接说明-v1.10.0.md`。
 - 当前正式版：v1.9.1+33，标签 `v1.9.1`（2026-11-05 发布）：离线排队发送（对方上线自动发出）、电脑回车后保持输入焦点、「系统后台设置」入口（华为等需手动允许自启动/后台活动）。
 - 上一个正式版：v1.9.0+32，标签 `v1.9.0`（2026-11-05 发布）：设置 → 接收新增自动接收文件（默认只限连接过的设备）和手机后台持续接收（默认关闭）；Windows 包自带 VC++ 运行库。见 `docs/开发交接说明-v1.9.0.md`。
 - 更早的正式版：v1.8.4+31，标签 `v1.8.4`（2026-11-04 发布）：手机端一键更新改为走系统代理、进度显示速度。
@@ -63,7 +64,8 @@
 - VPS 中转服务：`relay_server/`
 - 远程设置：`app/lib/src/remote/remote_access_settings.dart`
 - 检查更新与一键更新：`app/lib/src/update/`
-- 聊天和停止按钮：`app/lib/src/chat/chat_page.dart`
+- 聊天和停止按钮：`app/lib/src/chat/chat_page.dart`（长按菜单、引用 `chat_quote.dart`、剪贴板与发送缓存 `clipboard_files.dart`、缩略图 `chat_thumbnail.dart`）
+- Windows 剪贴板：`app/windows/runner/clipboard_bridge.cpp`；Android 剪贴板与缩略图：`ClipboardSupport.kt`
 - Android 原生分享/日志：`app/android/app/src/main/kotlin/com/personal/lantransfer/lan_transfer/MainActivity.kt`
 - Windows 单实例：`app/windows/runner/main.cpp`
 - 测试：`app/test/`

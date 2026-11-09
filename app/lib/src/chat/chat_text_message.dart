@@ -7,10 +7,19 @@ import 'package:url_launcher/url_launcher.dart';
 /// Uses the same selection gestures for links and ordinary chat text.
 /// A drag/long press selects; only a completed single tap opens a link.
 class ChatTextMessage extends StatelessWidget {
-  const ChatTextMessage({required this.text, this.onOpenLink, super.key});
+  const ChatTextMessage({
+    required this.text,
+    this.onOpenLink,
+    this.extraActions = const [],
+    super.key,
+  });
 
   final String text;
   final Future<void> Function(Uri uri)? onOpenLink;
+
+  /// Message actions (转发、引用、删除) appended to the long-press / right-click
+  /// menu, WeChat style. The menu closes before each runs.
+  final List<ChatMessageAction> extraActions;
 
   Uri? get _link {
     final uri = Uri.tryParse(text.trim());
@@ -73,9 +82,17 @@ class ChatTextMessage extends StatelessWidget {
                     state.copySelection(SelectionChangedCause.toolbar),
               ),
             ContextMenuButtonItem(
-              label: '复制全部',
+              label: '复制',
               onPressed: () => unawaited(_copyAll(context, state)),
             ),
+            for (final action in extraActions)
+              ContextMenuButtonItem(
+                label: action.label,
+                onPressed: () {
+                  state.hideToolbar();
+                  action.onSelected();
+                },
+              ),
             ContextMenuButtonItem(
               label: '全选',
               onPressed: () => state.selectAll(SelectionChangedCause.toolbar),
@@ -93,4 +110,12 @@ class ChatTextMessage extends StatelessWidget {
       },
     );
   }
+}
+
+class ChatMessageAction {
+  const ChatMessageAction(this.label, this.onSelected, {this.icon});
+
+  final String label;
+  final VoidCallback onSelected;
+  final IconData? icon;
 }

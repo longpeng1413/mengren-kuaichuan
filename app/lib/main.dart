@@ -3,19 +3,20 @@ import 'dart:io';
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
-import 'package:launch_at_startup/launch_at_startup.dart';
 
 import 'src/app.dart';
 import 'src/app_version.dart';
+import 'src/chat/clipboard_files.dart';
 import 'src/device/device_identity.dart';
 import 'src/desktop/desktop_tray_service.dart';
+import 'src/desktop/startup_launch.dart';
 import 'src/diagnostics/diagnostic_log_service.dart';
 import 'src/pairing/pairing_endpoint.dart';
 import 'src/remote/remote_access_settings.dart';
 import 'src/settings/app_settings.dart';
 import 'src/update/app_update_service.dart';
 
-Future<void> main() async {
+Future<void> main(List<String> arguments) async {
   WidgetsFlutterBinding.ensureInitialized();
   // Full-resolution phone photos can otherwise occupy tens of megabytes each
   // in Flutter's decoded image cache. Chat thumbnails do not need that budget.
@@ -43,7 +44,8 @@ Future<void> main() async {
     return true;
   };
   await diagnostics.log(
-    'app_start version=$appVersion platform=${Platform.operatingSystem}',
+    'app_start version=$appVersion platform=${Platform.operatingSystem}'
+    '${isSilentStart(arguments) ? ' silent=true' : ''}',
   );
 
   try {
@@ -74,13 +76,34 @@ Future<void> main() async {
         );
       }
     }
+    // Pasted pictures and forwarded copies: 30 days / 1 GiB, plus anything a
+    // crash left half-written.
+    try {
+      final removed = await OutgoingCache.instance.cleanup();
+      if (removed > 0) {
+        await diagnostics.log('outgoing_cache_cleaned bytes=$removed');
+      }
+    } catch (error, stackTrace) {
+      await diagnostics.log(
+        'outgoing_cache_cleanup_failed',
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
     await DesktopTrayService.instance.initialize();
     if (Platform.isWindows && settings.launchAtStartup) {
-      launchAtStartup.setup(
-        appName: '猛人快传',
-        appPath: Platform.resolvedExecutable,
-      );
-      await launchAtStartup.enable();
+      try {
+        await applyLaunchAtStartup(
+          enabled: true,
+          silent: settings.silentStartup,
+        );
+      } catch (error, stackTrace) {
+        await diagnostics.log(
+          'launch_at_startup_refresh_failed',
+          error: error,
+          stackTrace: stackTrace,
+        );
+      }
     }
 
     runApp(

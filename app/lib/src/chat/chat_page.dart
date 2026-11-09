@@ -9,9 +9,13 @@ import 'package:path/path.dart' as path;
 
 import '../discovery/discovered_device.dart';
 import '../storage/received_file_service.dart';
+import '../transfer/transfer_client.dart' show TransferException;
 import '../transfer/transfer_models.dart';
 import 'chat_message.dart';
+import 'chat_quote.dart';
 import 'chat_text_message.dart';
+import 'chat_thumbnail.dart';
+import 'clipboard_files.dart';
 
 typedef SendChatText = Future<void> Function(String text);
 typedef ClearConversation = Future<void> Function(bool deleteCache);
@@ -22,6 +26,11 @@ typedef PickAndSendFiles = Future<void> Function(
   void Function(String fileName, int sentBytes, int totalBytes) onProgress,
   TransferCancellationToken cancellation,
 );
+
+/// Forwards [message] to [target]; returns a short note for the user, or null
+/// when the app switched to the target conversation to show the progress.
+typedef ForwardChatMessage =
+    Future<String?> Function(ChatMessage message, DiscoveredDevice target);
 
 class ChatPage extends StatefulWidget {
   const ChatPage({
@@ -34,6 +43,10 @@ class ChatPage extends StatefulWidget {
     required this.onRemoveDevice,
     this.onCancelIncomingTransfer,
     this.onDiscardUndelivered,
+    this.onDeleteMessage,
+    this.onForward,
+    this.forwardTargets,
+    this.clipboard,
     this.initialFilePaths = const [],
     super.key,
   });
@@ -49,6 +62,16 @@ class ChatPage extends StatefulWidget {
 
   /// Cancels a queued message/file or removes one that failed to send.
   final void Function(String messageId)? onDiscardUndelivered;
+
+  /// Long-press 删除: removes the message from this device's history only.
+  final Future<void> Function(ChatMessage message)? onDeleteMessage;
+
+  /// Long-press 转发 to another device (online, offline or via VPS).
+  final ForwardChatMessage? onForward;
+  final List<DiscoveredDevice> Function()? forwardTargets;
+
+  /// Pasting pictures/files from the clipboard; tests pass a fake.
+  final ClipboardFileSource? clipboard;
   final List<String> initialFilePaths;
 
   @override
@@ -72,6 +95,12 @@ class _ChatPageState extends State<ChatPage> {
   TransferCancellationToken? _activeCancellation;
   bool _cancelling = false;
   bool _incomingCancelling = false;
+
+  /// The message shown above the input box while replying with a quote.
+  ChatMessage? _quoting;
+
+  ClipboardFileSource get _clipboard =>
+      widget.clipboard ?? PlatformClipboardFiles.instance;
 
   @override
   void initState() {
@@ -142,10 +171,16 @@ class _ChatPageState extends State<ChatPage> {
   Future<void> _sendText() async {
     final text = _textController.text.trim();
     if (_busy || text.isEmpty) return;
+    final quoting = _quoting;
     setState(() => _busy = true);
     try {
-      await widget.onSendText(text);
+      await widget.onSendText(
+        quoting == null ? text : composeQuotedText(quoteFor(quoting), text),
+      );
       _textController.clear();
+      if (mounted && identical(_quoting, quoting)) {
+        setState(() => _quoting = null);
+      }
     } catch (error) {
       _showError(error);
     } finally {
@@ -368,6 +403,276 @@ class _ChatPageState extends State<ChatPage> {
     if (mounted) Navigator.of(context).pop();
   }
 
+  void _showNotice(String text, {ScaffoldMessengerState? messenger}) {
+    final target =
+        messenger ?? (mounted ? ScaffoldMessenger.of(context) : null);
+    target?.showSnackBar(SnackBar(content: Text(text)));
+  }
+
+  static String _describe(Object error) => switch (error) {
+    FileSystemException(:final message) => message,
+    TransferException(:final message) => message,
+    PlatformException(:final message) => message ?? '$error',
+    _ => '$error',
+  };
+
+  // ---- 长按菜单 ----
+
+  List<ChatMessageAction> _actionsFor(
+    ChatMessage message, {
+    bool inTextMenu = false,
+  }) {
+    final isText = message.kind == ChatMessageKind.text;
+    final filePath = message.filePath;
+    final localFile = filePath != null && File(filePath).existsSync();
+    return [
+      // The text selection menu already has its own 复制.
+      if (isText && !inTextMenu)
+        ChatMessageAction(
+          '复制',
+          () => unawaited(_copyMessage(message)),
+          icon: Icons.copy_rounded,
+        ),
+      if (!isText && localFile && _clipboard.canCopyFiles)
+        ChatMessageAction(
+          '复制',
+          () => unawaited(_copyMessage(message)),
+          icon: Icons.copy_rounded,
+        ),
+      if (widget.onForward != null)
+        ChatMessageAction(
+          '转发',
+          () => unawaited(_forwardMessage(message)),
+          icon: Icons.shortcut_rounded,
+        ),
+      ChatMessageAction(
+        '引用',
+        () => _startQuote(message),
+        icon: Icons.format_quote_rounded,
+      ),
+      if (!isText && localFile && Platform.isWindows)
+        ChatMessageAction(
+          '在文件夹中显示',
+          () => unawaited(_revealInFolder(filePath)),
+          icon: Icons.folder_open_outlined,
+        ),
+      if (!isText && !Platform.isWindows && message.displayLocation != null)
+        ChatMessageAction(
+          '保存位置',
+          () => _showNotice('保存位置：${message.displayLocation}'),
+          icon: Icons.info_outline_rounded,
+        ),
+      if (widget.onDeleteMessage != null)
+        ChatMessageAction(
+          '删除',
+          () => unawaited(_deleteMessage(message)),
+          icon: Icons.delete_outline_rounded,
+        ),
+    ];
+  }
+
+  void _startQuote(ChatMessage message) {
+    setState(() => _quoting = message);
+    _inputFocus.requestFocus();
+  }
+
+  Future<void> _copyMessage(ChatMessage message) async {
+    try {
+      if (message.kind == ChatMessageKind.text) {
+        await Clipboard.setData(
+          ClipboardData(text: parseQuotedText(message.text ?? '').reply),
+        );
+        _showNotice('已复制');
+        return;
+      }
+      final filePath = message.filePath;
+      if (filePath == null || !File(filePath).existsSync()) {
+        throw const FileSystemException('文件已被移动或删除');
+      }
+      await _clipboard.copyFiles([filePath]);
+      _showNotice(
+        isImageFileName(filePath)
+            ? '图片已复制，可以粘贴到微信、QQ、画图或文件夹里'
+            : '文件已复制，可以粘贴到文件夹或微信里',
+      );
+    } catch (error) {
+      _showNotice('复制失败：${_describe(error)}');
+    }
+  }
+
+  Future<void> _revealInFolder(String filePath) async {
+    try {
+      await Process.start('explorer.exe', ['/select,', filePath]);
+    } catch (error) {
+      _showNotice('无法打开文件夹：${_describe(error)}');
+    }
+  }
+
+  Future<void> _deleteMessage(ChatMessage message) async {
+    final delete = widget.onDeleteMessage;
+    if (delete == null) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('删除这条消息？'),
+        content: Text(
+          message.kind == ChatMessageKind.file
+              ? '只删除本机的聊天记录，已经保存的文件不会删除，对方那边也不受影响。'
+              : '只删除本机的聊天记录，对方那边不受影响。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    if (_quoting?.id == message.id) setState(() => _quoting = null);
+    try {
+      await delete(message);
+    } catch (error) {
+      _showNotice('删除失败：${_describe(error)}');
+    }
+  }
+
+  Future<void> _forwardMessage(ChatMessage message) async {
+    final forward = widget.onForward;
+    if (forward == null) return;
+    final candidates = (widget.forwardTargets?.call() ?? const [])
+        .where((device) => device.deviceId != widget.device.deviceId)
+        .toList();
+    if (candidates.isEmpty) {
+      _showNotice('附近没有其他设备，请先在另一台设备上打开猛人快传');
+      return;
+    }
+    final target = await showDialog<DiscoveredDevice>(
+      context: context,
+      builder: (_) => _ForwardDialog(
+        devices: candidates,
+        preview: quoteSnippetFor(message),
+      ),
+    );
+    if (target == null || !mounted) return;
+    // Forwarding a file switches to the target conversation; keep a handle
+    // to show the result there.
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final note = await forward(message, target);
+      if (note != null) _showNotice(note, messenger: messenger);
+    } on TransferCancelledException {
+      _showNotice('已取消转发', messenger: messenger);
+    } catch (error) {
+      _showNotice('转发失败：${_describe(error)}', messenger: messenger);
+    }
+  }
+
+  // ---- 粘贴图片和文件 ----
+
+  Future<void> _pasteAttachments() async {
+    if (_busy) {
+      _showNotice('正在发送，请稍候再粘贴');
+      return;
+    }
+    ClipboardAttachments attachments;
+    try {
+      attachments = await _clipboard.read();
+    } catch (error) {
+      _showNotice('读取剪贴板失败：${_describe(error)}');
+      return;
+    }
+    if (!mounted) return;
+    if (attachments.paths.isEmpty) {
+      _showNotice(
+        attachments.skippedFolders > 0
+            ? '暂不支持发送文件夹，请复制文件夹里的文件'
+            : '剪贴板里没有可以发送的图片或文件',
+      );
+      return;
+    }
+    await _confirmAndSend(
+      attachments.paths,
+      skippedFolders: attachments.skippedFolders,
+    );
+  }
+
+  Future<void> _confirmAndSend(
+    List<String> paths, {
+    int skippedFolders = 0,
+  }) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (_) => _PasteConfirmDialog(
+        device: widget.device,
+        paths: paths,
+        skippedFolders: skippedFolders,
+      ),
+    );
+    if (confirmed == true && mounted) {
+      await _sendFiles(paths);
+      return;
+    }
+    // A pasted screenshot that was not sent is not kept.
+    for (final filePath in paths) {
+      if (!OutgoingCache.instance.contains(filePath)) continue;
+      try {
+        await File(filePath).delete();
+      } catch (_) {}
+    }
+  }
+
+  /// Ctrl+V on Windows: copied files (or a bitmap without text) are offered
+  /// for sending; anything else is pasted into the box as usual.
+  Future<void> _handlePasteShortcut() async {
+    final peek = await _clipboard.peek();
+    if (!mounted) return;
+    if (peek.files || (peek.image && !peek.text)) {
+      await _pasteAttachments();
+      return;
+    }
+    final focusContext = _inputFocus.context;
+    if (focusContext != null && focusContext.mounted) {
+      Actions.maybeInvoke(
+        focusContext,
+        const PasteTextIntent(SelectionChangedCause.keyboard),
+      );
+    }
+  }
+
+  /// Android keyboards (Gboard's clipboard panel, stickers) insert pictures
+  /// as content instead of text.
+  Future<void> _insertKeyboardContent(KeyboardInsertedContent content) async {
+    final data = content.data;
+    if (data == null || data.isEmpty) {
+      _showNotice('输入法没有提供图片内容，请换用长按输入框粘贴');
+      return;
+    }
+    final extension = switch (content.mimeType) {
+      'image/gif' => '.gif',
+      'image/webp' => '.webp',
+      'image/jpeg' || 'image/jpg' => '.jpg',
+      _ => '.png',
+    };
+    try {
+      final file = await OutgoingCache.instance.createFile(
+        pastedImageName().replaceFirst(RegExp(r'\.png$'), extension),
+      );
+      await file.writeAsBytes(data, flush: true);
+      if (!mounted) {
+        await file.delete();
+        return;
+      }
+      await _confirmAndSend([file.path]);
+    } catch (error) {
+      _showNotice('无法读取输入法的图片：${_describe(error)}');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final progress = _totalBytes <= 0
@@ -527,21 +832,34 @@ class _ChatPageState extends State<ChatPage> {
                           controller: _scrollController,
                           padding: const EdgeInsets.fromLTRB(16, 16, 16, 10),
                           itemCount: messages.length,
-                          itemBuilder: (context, index) => _MessageBubble(
-                            message: messages[index],
-                            onDiscard:
-                                messages[index].deliveryState == null ||
-                                    widget.onDiscardUndelivered == null
-                                ? null
-                                : () => widget.onDiscardUndelivered!(
-                                    messages[index].id,
-                                  ),
-                          ),
+                          itemBuilder: (context, index) {
+                            final message = messages[index];
+                            return _MessageBubble(
+                              message: message,
+                              actions: _actionsFor(message),
+                              textMenuActions: _actionsFor(
+                                message,
+                                inTextMenu: true,
+                              ),
+                              onDiscard:
+                                  message.deliveryState == null ||
+                                      widget.onDiscardUndelivered == null
+                                  ? null
+                                  : () => widget.onDiscardUndelivered!(
+                                      message.id,
+                                    ),
+                            );
+                          },
                         );
                       },
                     ),
                   ),
                   const Divider(height: 1),
+                  if (_quoting != null)
+                    _QuoteBar(
+                      quote: quoteFor(_quoting!),
+                      onClose: () => setState(() => _quoting = null),
+                    ),
                   Padding(
                     padding: const EdgeInsets.fromLTRB(10, 10, 10, 10),
                     child: Row(
@@ -554,9 +872,14 @@ class _ChatPageState extends State<ChatPage> {
                         ),
                         Expanded(
                           child: Shortcuts(
-                            shortcuts: const {
-                              SingleActivator(LogicalKeyboardKey.enter):
-                                  _SendMessageIntent(),
+                            shortcuts: {
+                              const SingleActivator(LogicalKeyboardKey.enter):
+                                  const _SendMessageIntent(),
+                              if (Platform.isWindows)
+                                const SingleActivator(
+                                  LogicalKeyboardKey.keyV,
+                                  control: true,
+                                ): const _PasteIntent(),
                             },
                             child: Actions(
                               actions: {
@@ -567,6 +890,12 @@ class _ChatPageState extends State<ChatPage> {
                                         return null;
                                       },
                                     ),
+                                _PasteIntent: CallbackAction<_PasteIntent>(
+                                  onInvoke: (_) {
+                                    unawaited(_handlePasteShortcut());
+                                    return null;
+                                  },
+                                ),
                               },
                               child: TextField(
                                 controller: _textController,
@@ -590,10 +919,28 @@ class _ChatPageState extends State<ChatPage> {
                                 onSubmitted: Platform.isAndroid
                                     ? (_) => _sendText()
                                     : null,
+                                contextMenuBuilder: (context, state) =>
+                                    _InputContextMenu(
+                                      editableTextState: state,
+                                      clipboard: _clipboard,
+                                      onPasteAttachments: () {
+                                        state.hideToolbar();
+                                        unawaited(_pasteAttachments());
+                                      },
+                                    ),
+                                contentInsertionConfiguration:
+                                    Platform.isAndroid
+                                    ? ContentInsertionConfiguration(
+                                        onContentInserted: (content) =>
+                                            unawaited(
+                                              _insertKeyboardContent(content),
+                                            ),
+                                      )
+                                    : null,
                                 decoration: InputDecoration(
                                   hintText: Platform.isAndroid
-                                      ? '输入文字或粘贴链接'
-                                      : '输入文字或链接，Enter 发送',
+                                      ? '输入文字，长按可粘贴图片或文件'
+                                      : '输入文字，Enter 发送，Ctrl+V 可粘贴图片',
                                   isDense: true,
                                   border: OutlineInputBorder(
                                     borderRadius: BorderRadius.circular(22),
@@ -668,6 +1015,10 @@ class _ChatPageState extends State<ChatPage> {
 
 class _SendMessageIntent extends Intent {
   const _SendMessageIntent();
+}
+
+class _PasteIntent extends Intent {
+  const _PasteIntent();
 }
 
 enum _ConversationAction { clear, remove }
@@ -759,9 +1110,20 @@ class _TransferProgress extends StatelessWidget {
 }
 
 class _MessageBubble extends StatelessWidget {
-  const _MessageBubble({required this.message, this.onDiscard});
+  const _MessageBubble({
+    required this.message,
+    this.actions = const [],
+    this.textMenuActions = const [],
+    this.onDiscard,
+  });
 
   final ChatMessage message;
+
+  /// Long-press / right-click menu of the bubble.
+  final List<ChatMessageAction> actions;
+
+  /// Added to the text selection menu (it brings its own 复制).
+  final List<ChatMessageAction> textMenuActions;
 
   /// Cancels a queued item or deletes a failed one.
   final VoidCallback? onDiscard;
@@ -771,39 +1133,81 @@ class _MessageBubble extends StatelessWidget {
     final colors = Theme.of(context).colorScheme;
     final outgoing = message.isOutgoing;
     final state = message.deliveryState;
+    final isText = message.kind == ChatMessageKind.text;
+    final isPicture =
+        !isText && isImageFileName(message.fileName ?? message.filePath ?? '');
+    final quoted = isText ? parseQuotedText(message.text ?? '') : null;
+    final time = Text(
+      _formatTime(message.sentAt),
+      style: Theme.of(context).textTheme.labelSmall
+          ?.copyWith(color: colors.onSurfaceVariant),
+    );
+
+    Widget decorated(Widget child) => Container(
+      constraints: const BoxConstraints(maxWidth: 560),
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 7),
+      decoration: BoxDecoration(
+        color: outgoing
+            ? colors.primaryContainer
+            : colors.surfaceContainerLowest,
+        border: outgoing
+            ? null
+            : Border.all(color: colors.outlineVariant.withValues(alpha: 0.7)),
+        borderRadius: BorderRadius.only(
+          topLeft: const Radius.circular(16),
+          topRight: const Radius.circular(16),
+          bottomLeft: Radius.circular(outgoing ? 16 : 4),
+          bottomRight: Radius.circular(outgoing ? 4 : 16),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [child, const SizedBox(height: 4), time],
+      ),
+    );
+
+    final Widget content;
+    if (isText) {
+      content = decorated(
+        ChatTextMessage(text: quoted!.reply, extraActions: textMenuActions),
+      );
+    } else if (isPicture) {
+      // WeChat style: only a small picture, no name/size/location.
+      content = ChatImageThumbnail(
+        key: ValueKey('thumbnail_${message.id}'),
+        filePath: message.filePath,
+        contentUri: message.contentUri,
+        footer: time,
+        alignEnd: outgoing,
+        fallback: decorated(_FileCard(message: message)),
+      );
+    } else {
+      content = decorated(_FileCard(message: message));
+    }
+
+    void showMenuAt(Offset position) =>
+        unawaited(_showMessageMenu(context, position, actions));
+
     final bubble = Align(
       alignment: outgoing ? Alignment.centerRight : Alignment.centerLeft,
-      child: Container(
-        constraints: const BoxConstraints(maxWidth: 560),
-        margin: const EdgeInsets.only(bottom: 10),
-        padding: const EdgeInsets.fromLTRB(12, 10, 12, 7),
-        decoration: BoxDecoration(
-          color: outgoing
-              ? colors.primaryContainer
-              : colors.surfaceContainerLowest,
-          border: outgoing
-              ? null
-              : Border.all(color: colors.outlineVariant.withValues(alpha: 0.7)),
-          borderRadius: BorderRadius.only(
-            topLeft: const Radius.circular(16),
-            topRight: const Radius.circular(16),
-            bottomLeft: Radius.circular(outgoing ? 16 : 4),
-            bottomRight: Radius.circular(outgoing ? 4 : 16),
-          ),
-        ),
+      child: Padding(
+        padding: const EdgeInsets.only(bottom: 10),
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: outgoing
+              ? CrossAxisAlignment.end
+              : CrossAxisAlignment.start,
           children: [
-            if (message.kind == ChatMessageKind.text)
-              ChatTextMessage(text: message.text ?? '')
-            else
-              _FileMessage(message: message),
-            const SizedBox(height: 4),
-            Text(
-              _formatTime(message.sentAt),
-              style: Theme.of(context).textTheme.labelSmall
-                  ?.copyWith(color: colors.onSurfaceVariant),
+            GestureDetector(
+              key: ValueKey('bubble_${message.id}'),
+              onTap: isText ? null : () => _openMessageFile(context, message),
+              onLongPressStart: (details) => showMenuAt(details.globalPosition),
+              onSecondaryTapUp: (details) => showMenuAt(details.globalPosition),
+              child: content,
             ),
+            if (quoted?.quote != null)
+              _QuotedBlock(quote: quoted!.quote!),
           ],
         ),
       ),
@@ -853,113 +1257,499 @@ class _MessageBubble extends StatelessWidget {
   }
 }
 
-class _FileMessage extends StatelessWidget {
-  const _FileMessage({required this.message});
+Future<void> _showMessageMenu(
+  BuildContext context,
+  Offset position,
+  List<ChatMessageAction> actions,
+) async {
+  if (actions.isEmpty) return;
+  final overlay = Overlay.of(context).context.findRenderObject() as RenderBox;
+  final selected = await showMenu<ChatMessageAction>(
+    context: context,
+    position: RelativeRect.fromRect(
+      position & const Size(1, 1),
+      Offset.zero & overlay.size,
+    ),
+    items: [
+      for (final action in actions)
+        PopupMenuItem<ChatMessageAction>(
+          value: action,
+          height: 42,
+          child: Row(
+            children: [
+              if (action.icon != null) ...[
+                Icon(action.icon, size: 18),
+                const SizedBox(width: 12),
+              ],
+              Text(action.label),
+            ],
+          ),
+        ),
+    ],
+  );
+  selected?.onSelected();
+}
 
-  static final ReceivedFileService _fileService = ReceivedFileService();
+final ReceivedFileService _fileService = ReceivedFileService();
+
+Future<void> _openMessageFile(BuildContext context, ChatMessage message) async {
+  final filePath = message.filePath;
+  final localExists = filePath != null && File(filePath).existsSync();
+  if (!localExists && message.contentUri == null) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('文件已被移动或删除')),
+    );
+    return;
+  }
+  try {
+    await _fileService.openFile(
+      filePath: localExists ? filePath : null,
+      contentUri: message.contentUri,
+    );
+  } catch (error) {
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text('无法打开文件：$error')));
+  }
+}
+
+/// A compact file card: type icon, name and size. The save location is in
+/// the long-press menu (在文件夹中显示 / 保存位置) instead of taking space here.
+class _FileCard extends StatelessWidget {
+  const _FileCard({required this.message});
 
   final ChatMessage message;
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     final filePath = message.filePath;
-    final isImage = _isImageFile(message.fileName ?? filePath ?? '');
-    final file = filePath == null ? null : File(filePath);
-    final localExists = file?.existsSync() ?? false;
+    final name = message.fileName ?? (filePath == null ? '文件' : path.basename(filePath));
+    final localExists = filePath != null && File(filePath).existsSync();
     final canOpen = localExists || message.contentUri != null;
-    return InkWell(
-      borderRadius: BorderRadius.circular(10),
-      onTap: canOpen
-          ? () async {
-              try {
-                await _fileService.openFile(
-                  filePath: filePath,
-                  contentUri: message.contentUri,
-                );
-              } catch (error) {
-                if (!context.mounted) return;
-                ScaffoldMessenger.of(context)
-                    .showSnackBar(SnackBar(content: Text('无法打开文件：$error')));
-              }
-            }
-          : null,
-      child: Padding(
-        padding: const EdgeInsets.all(2),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (isImage && localExists)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(9),
-                  child: Image.file(
-                    file!,
-                    width: 260,
-                    height: 190,
-                    cacheWidth: 780,
-                    cacheHeight: 570,
-                    fit: BoxFit.cover,
-                    filterQuality: FilterQuality.low,
-                    errorBuilder: (_, _, _) => const SizedBox.shrink(),
-                  ),
-                ),
-              ),
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  isImage
-                      ? Icons.image_outlined
-                      : Icons.insert_drive_file_outlined,
-                ),
-                const SizedBox(width: 8),
-                Flexible(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        message.fileName ?? '文件',
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      if (message.fileSize != null)
-                        Text(
-                          _formatBytes(message.fileSize!),
-                          style: Theme.of(context).textTheme.labelSmall,
-                        ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 5),
-            Text(
-              canOpen
-                  ? (message.isOutgoing ? '点击打开本机文件' : '点击选择应用打开')
-                  : message.displayLocation ?? '文件已被移动或删除',
-              style: Theme.of(context).textTheme.labelSmall,
-            ),
-            if ((message.displayLocation != null || filePath != null) &&
-                canOpen) ...[
-              const SizedBox(height: 3),
+    final size = message.fileSize;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 40,
+          height: 40,
+          decoration: BoxDecoration(
+            color: theme.colorScheme.surfaceContainerHighest,
+            borderRadius: BorderRadius.circular(9),
+          ),
+          child: Icon(
+            _fileIconFor(name),
+            size: 22,
+            color: theme.colorScheme.primary,
+          ),
+        ),
+        const SizedBox(width: 10),
+        Flexible(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(name, maxLines: 2, overflow: TextOverflow.ellipsis),
+              const SizedBox(height: 2),
               Text(
-                '保存位置：${message.displayLocation ?? filePath}',
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.labelSmall,
+                canOpen
+                    ? (size == null ? '点击打开' : _formatBytes(size))
+                    // Files shared from another app are removed after
+                    // sending on purpose; say so instead of "deleted".
+                    : filePath == null && message.displayLocation != null
+                    ? message.displayLocation!
+                    : '文件已被移动或删除',
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: canOpen
+                      ? theme.colorScheme.onSurfaceVariant
+                      : theme.colorScheme.error,
+                ),
               ),
             ],
-          ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+IconData _fileIconFor(String name) {
+  switch (path.extension(name).toLowerCase()) {
+    case '.jpg':
+    case '.jpeg':
+    case '.png':
+    case '.gif':
+    case '.webp':
+    case '.bmp':
+      return Icons.image_outlined;
+    case '.mp4':
+    case '.mkv':
+    case '.mov':
+    case '.avi':
+    case '.wmv':
+      return Icons.movie_outlined;
+    case '.mp3':
+    case '.wav':
+    case '.flac':
+    case '.m4a':
+      return Icons.audiotrack_outlined;
+    case '.zip':
+    case '.rar':
+    case '.7z':
+    case '.tar':
+    case '.gz':
+      return Icons.folder_zip_outlined;
+    case '.apk':
+      return Icons.android_rounded;
+    case '.pdf':
+      return Icons.picture_as_pdf_outlined;
+    case '.doc':
+    case '.docx':
+    case '.txt':
+    case '.md':
+      return Icons.description_outlined;
+    case '.xls':
+    case '.xlsx':
+    case '.csv':
+      return Icons.table_chart_outlined;
+    default:
+      return Icons.insert_drive_file_outlined;
+  }
+}
+
+/// The grey quote under a reply bubble, as in WeChat.
+class _QuotedBlock extends StatelessWidget {
+  const _QuotedBlock({required this.quote});
+
+  final ChatQuote quote;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      constraints: const BoxConstraints(maxWidth: 420),
+      margin: const EdgeInsets.only(top: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.8),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Text(
+        '${quote.senderName}：${quote.snippet}',
+        key: const Key('quoted_block'),
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+        style: theme.textTheme.bodySmall?.copyWith(
+          color: theme.colorScheme.onSurfaceVariant,
         ),
       ),
     );
   }
 }
 
-bool _isImageFile(String value) {
-  const extensions = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'};
-  return extensions.contains(path.extension(value).toLowerCase());
+/// Shown above the input box while replying with a quote.
+class _QuoteBar extends StatelessWidget {
+  const _QuoteBar({required this.quote, required this.onClose});
+
+  final ChatQuote quote;
+  final VoidCallback onClose;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      key: const Key('quote_bar'),
+      color: theme.colorScheme.surfaceContainerHigh,
+      padding: const EdgeInsets.fromLTRB(14, 4, 4, 4),
+      child: Row(
+        children: [
+          Icon(
+            Icons.format_quote_rounded,
+            size: 18,
+            color: theme.colorScheme.primary,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              '引用 ${quote.senderName}：${quote.snippet}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+          IconButton(
+            tooltip: '取消引用',
+            visualDensity: VisualDensity.compact,
+            onPressed: onClose,
+            icon: const Icon(Icons.close_rounded, size: 18),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// The input box's long-press / right-click menu in Chinese, plus
+/// 粘贴图片 / 粘贴文件 when the clipboard holds something to send.
+class _InputContextMenu extends StatefulWidget {
+  const _InputContextMenu({
+    required this.editableTextState,
+    required this.clipboard,
+    required this.onPasteAttachments,
+  });
+
+  final EditableTextState editableTextState;
+  final ClipboardFileSource clipboard;
+  final VoidCallback onPasteAttachments;
+
+  @override
+  State<_InputContextMenu> createState() => _InputContextMenuState();
+}
+
+class _InputContextMenuState extends State<_InputContextMenu> {
+  ClipboardPeek _peek = ClipboardPeek.empty;
+
+  @override
+  void initState() {
+    super.initState();
+    // The menu is built synchronously; the clipboard check adds its button
+    // a moment later.
+    unawaited(
+      widget.clipboard.peek().then((peek) {
+        if (mounted) setState(() => _peek = peek);
+      }),
+    );
+  }
+
+  static String? _chineseLabel(ContextMenuButtonType type) => switch (type) {
+    ContextMenuButtonType.cut => '剪切',
+    ContextMenuButtonType.copy => '复制',
+    ContextMenuButtonType.paste => '粘贴',
+    ContextMenuButtonType.selectAll => '全选',
+    ContextMenuButtonType.delete => '删除',
+    ContextMenuButtonType.lookUp => '查询',
+    ContextMenuButtonType.searchWeb => '搜索',
+    ContextMenuButtonType.share => '分享',
+    _ => null,
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final items = [
+      for (final item in widget.editableTextState.contextMenuButtonItems)
+        item.label == null && _chineseLabel(item.type) != null
+            ? item.copyWith(label: _chineseLabel(item.type))
+            : item,
+    ];
+    if (_peek.hasAttachment) {
+      final pasteIndex = items.indexWhere(
+        (item) => item.type == ContextMenuButtonType.paste,
+      );
+      items.insert(
+        pasteIndex < 0 ? 0 : pasteIndex + 1,
+        ContextMenuButtonItem(
+          label: _peek.files ? '粘贴文件' : '粘贴图片',
+          onPressed: widget.onPasteAttachments,
+        ),
+      );
+    }
+    return AdaptiveTextSelectionToolbar.buttonItems(
+      anchors: widget.editableTextState.contextMenuAnchors,
+      buttonItems: items,
+    );
+  }
+}
+
+IconData _deviceIcon(DiscoveredDevice device) => device.isRemote
+    ? Icons.cloud_outlined
+    : device.platform == 'android'
+    ? Icons.smartphone_rounded
+    : Icons.laptop_windows_rounded;
+
+class _ForwardDialog extends StatefulWidget {
+  const _ForwardDialog({required this.devices, required this.preview});
+
+  final List<DiscoveredDevice> devices;
+  final String preview;
+
+  @override
+  State<_ForwardDialog> createState() => _ForwardDialogState();
+}
+
+class _ForwardDialogState extends State<_ForwardDialog> {
+  DiscoveredDevice? _selected;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return AlertDialog(
+      title: const Text('转发给'),
+      contentPadding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+      content: SizedBox(
+        width: 360,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Container(
+              margin: const EdgeInsets.symmetric(horizontal: 12),
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(
+                widget.preview,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.bodySmall,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Flexible(
+              child: ListView(
+                shrinkWrap: true,
+                children: [
+                  for (final device in widget.devices)
+                    ListTile(
+                      key: ValueKey('forward_${device.deviceId}'),
+                      leading: Icon(_deviceIcon(device)),
+                      title: Text(
+                        device.displayName,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      subtitle: Text(
+                        device.isOffline
+                            ? '离线 · 上线后自动送达'
+                            : device.routeLabel,
+                      ),
+                      trailing: Icon(
+                        _selected?.deviceId == device.deviceId
+                            ? Icons.check_circle_rounded
+                            : Icons.radio_button_unchecked_rounded,
+                        color: _selected?.deviceId == device.deviceId
+                            ? theme.colorScheme.primary
+                            : theme.colorScheme.outline,
+                      ),
+                      onTap: () => setState(() => _selected = device),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: _selected == null
+              ? null
+              : () => Navigator.pop(context, _selected),
+          child: const Text('发送'),
+        ),
+      ],
+    );
+  }
+}
+
+class _PasteConfirmDialog extends StatelessWidget {
+  const _PasteConfirmDialog({
+    required this.device,
+    required this.paths,
+    this.skippedFolders = 0,
+  });
+
+  final DiscoveredDevice device;
+  final List<String> paths;
+  final int skippedFolders;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final single = paths.length == 1;
+    return AlertDialog(
+      title: Text('发送给 ${device.displayName}'),
+      content: SizedBox(
+        width: 340,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (single && isImageFileName(paths.first))
+              Center(
+                child: ChatImageThumbnail(
+                  filePath: paths.first,
+                  maxWidth: 260,
+                  maxHeight: 260,
+                  fallback: Text(path.basename(paths.first)),
+                ),
+              )
+            else
+              for (final filePath in paths.take(5))
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Row(
+                    children: [
+                      Icon(_fileIconFor(filePath), size: 20),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          path.basename(filePath),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        _sizeLabel(filePath),
+                        style: theme.textTheme.labelSmall,
+                      ),
+                    ],
+                  ),
+                ),
+            if (paths.length > 5)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text('等 ${paths.length} 个文件'),
+              ),
+            if (skippedFolders > 0)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(
+                  '已跳过 $skippedFolders 个文件夹（暂不支持发送文件夹）',
+                  style: theme.textTheme.bodySmall,
+                ),
+              ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, true),
+          child: const Text('发送'),
+        ),
+      ],
+    );
+  }
+
+  static String _sizeLabel(String filePath) {
+    try {
+      return _formatBytes(File(filePath).lengthSync());
+    } catch (_) {
+      return '';
+    }
+  }
 }
 
 String _formatTime(DateTime value) {

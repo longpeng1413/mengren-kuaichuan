@@ -3,11 +3,13 @@ import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:launch_at_startup/launch_at_startup.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../app_version.dart';
 import '../background/background_receive.dart';
+import '../chat/chat_thumbnail.dart';
+import '../chat/clipboard_files.dart';
+import '../desktop/startup_launch.dart';
 import '../diagnostics/diagnostic_log_service.dart';
 import '../pairing/pairing_endpoint.dart';
 import '../remote/remote_access_settings.dart';
@@ -53,6 +55,7 @@ class _SettingsPageState extends State<SettingsPage> {
   DiagnosticLogInfo? _diagnosticInfo;
   bool _checkingUpdate = false;
   int _updateCacheBytes = 0;
+  int _outgoingCacheBytes = 0;
 
   @override
   void initState() {
@@ -62,6 +65,7 @@ class _SettingsPageState extends State<SettingsPage> {
     _removedDevices = List.of(widget.removedDevices);
     if (Platform.isAndroid || Platform.isWindows) _refreshDiagnosticInfo();
     if (AppUpdateService.isSupportedPlatform) _refreshUpdateCache();
+    if (Platform.isAndroid || Platform.isWindows) _refreshOutgoingCache();
   }
 
   Future<void> _refreshUpdateCache() async {
@@ -164,19 +168,76 @@ class _SettingsPageState extends State<SettingsPage> {
     if (!Platform.isWindows || _working) return;
     setState(() => _working = true);
     try {
-      launchAtStartup.setup(
-        appName: '猛人快传',
-        appPath: Platform.resolvedExecutable,
+      final succeeded = await applyLaunchAtStartup(
+        enabled: enabled,
+        silent: _settings.silentStartup,
       );
-      final succeeded = enabled
-          ? await launchAtStartup.enable()
-          : await launchAtStartup.disable();
       if (!succeeded) throw Exception('Windows 没有接受自启动设置');
       await _save(_settings.copyWith(launchAtStartup: enabled));
     } catch (error) {
       _showError('设置开机自启动失败：$error');
     } finally {
       if (mounted) setState(() => _working = false);
+    }
+  }
+
+  Future<void> _toggleSilentStartup(bool silent) async {
+    if (!Platform.isWindows || _working) return;
+    setState(() => _working = true);
+    try {
+      if (_settings.launchAtStartup) {
+        final succeeded = await applyLaunchAtStartup(
+          enabled: true,
+          silent: silent,
+        );
+        if (!succeeded) throw Exception('Windows 没有接受自启动设置');
+      }
+      await _save(_settings.copyWith(silentStartup: silent));
+    } catch (error) {
+      _showError('设置静默启动失败：$error');
+    } finally {
+      if (mounted) setState(() => _working = false);
+    }
+  }
+
+  Future<void> _refreshOutgoingCache() async {
+    try {
+      final bytes = await OutgoingCache.instance.size();
+      if (mounted) setState(() => _outgoingCacheBytes = bytes);
+    } catch (_) {}
+  }
+
+  Future<void> _clearOutgoingCache() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('清空发送缓存？'),
+        content: const Text(
+          '会删除粘贴后发送的截图、手机转发时临时复制的文件。'
+          '聊天记录保留，但这些图片不再显示缩略图；还在排队等待对方上线的这类文件会发送失败。'
+          '你自己电脑或手机里原来的文件不受影响。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('清空'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      final removed = await OutgoingCache.instance.clear();
+      ContentUriThumbnails.instance.clear();
+      _showMessage('已清空发送缓存（${formatUpdateBytes(removed)}）');
+    } catch (error) {
+      _showError('清空发送缓存失败：$error');
+    } finally {
+      await _refreshOutgoingCache();
     }
   }
 
@@ -561,6 +622,17 @@ class _SettingsPageState extends State<SettingsPage> {
                         onChanged: _working ? null : _toggleStartup,
                       ),
                     ),
+                  if (Platform.isWindows && _settings.launchAtStartup)
+                    _SettingsTile(
+                      key: const Key('silent_startup'),
+                      icon: Icons.visibility_off_outlined,
+                      title: '静默启动',
+                      subtitle: '开机时只在任务栏右下角的托盘里运行，不打开主窗口；点托盘图标即可打开',
+                      trailing: Switch(
+                        value: _settings.silentStartup,
+                        onChanged: _working ? null : _toggleSilentStartup,
+                      ),
+                    ),
                   _SettingsTile(
                     icon: Icons.folder_outlined,
                     title: '文件保存位置',
@@ -573,6 +645,21 @@ class _SettingsPageState extends State<SettingsPage> {
                         : const Icon(Icons.chevron_right),
                     onTap: _working ? null : _chooseDirectory,
                   ),
+                  if (Platform.isAndroid || Platform.isWindows)
+                    _SettingsTile(
+                      key: const Key('outgoing_cache'),
+                      icon: Icons.cleaning_services_outlined,
+                      title: '发送缓存',
+                      subtitle:
+                          '${formatUpdateBytes(_outgoingCacheBytes)} · 粘贴发送的截图、转发时复制的文件；'
+                          '超过 30 天或总量超过 1 GB 的启动时自动清理',
+                      trailing: TextButton(
+                        onPressed: _outgoingCacheBytes == 0
+                            ? null
+                            : _clearOutgoingCache,
+                        child: const Text('清空'),
+                      ),
+                    ),
                 ],
               ),
               _SettingsSection(
@@ -783,6 +870,20 @@ class _SettingsPageState extends State<SettingsPage> {
                         '电脑端隐藏到托盘时本来就一直在接收。\n'
                         '对方不在线时发的文字和文件会先排队，显示“等待对方上线”，对方打开猛人快传后自动发出；'
                         '排队最多 100 条，7 天没发出去会标记为未发送。',
+                  ),
+                  _HelpTile(
+                    icon: Icons.touch_app_outlined,
+                    title: '长按消息、粘贴图片和静默启动',
+                    body:
+                        '长按消息（电脑上右键）：复制、转发、引用、删除。转发可以发给附近任意一台设备，'
+                        '对方不在线时会排队；转发文件会切换到对方的对话里显示进度。'
+                        '删除只删本机的聊天记录，已保存的文件不受影响。'
+                        '引用回复在旧版本猛人快传上显示为“「名字：原文」”加一条分隔线的普通文字。\n'
+                        '粘贴图片和文件：手机长按输入框，剪贴板里有图片或文件时会出现“粘贴图片/粘贴文件”；'
+                        '电脑上按 Ctrl+V 或右键输入框即可，确认后发送。粘贴的截图会存在“发送缓存”里，'
+                        '30 天后自动清理。\n'
+                        '静默启动（电脑）：打开“开机自启动”后，默认开机只在任务栏右下角托盘里运行，'
+                        '不弹出窗口，照常接收；点托盘图标打开。',
                   ),
                   _HelpTile(
                     icon: Icons.route_outlined,

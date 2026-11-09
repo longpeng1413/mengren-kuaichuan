@@ -100,6 +100,9 @@ class MainActivity : FlutterActivity() {
         Thread(work, "mengren-share-import")
     }
     @Volatile private var activityDestroyed = false
+    private val clipboardSupport by lazy {
+        ClipboardSupport(this) { event, error -> nativeLog(event, error) }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         nativeLog("activity_on_create action=${intent?.action ?: "none"}")
@@ -132,6 +135,21 @@ class MainActivity : FlutterActivity() {
                         clearDiagnostics()
                         result.success(null)
                     }
+                    "clipboardPeek" -> result.success(clipboardSupport.peek())
+                    "clipboardFiles" -> clipboardSupport.readClipboardFiles(
+                        call.argument<String>("directory"),
+                        result,
+                    )
+                    "copyUriToCache" -> clipboardSupport.copyUriToCache(
+                        call.argument<String>("uri"),
+                        call.argument<String>("directory"),
+                        result,
+                    )
+                    "loadThumbnail" -> clipboardSupport.loadThumbnail(
+                        call.argument<String>("uri"),
+                        call.argument<Int>("size") ?: 480,
+                        result,
+                    )
                     else -> result.notImplemented()
                 }
             }
@@ -832,6 +850,7 @@ class MainActivity : FlutterActivity() {
         backgroundChannel = null
         if (activeActivity?.get() === this) activeActivity = null
         shareImportExecutor.shutdownNow()
+        clipboardSupport.shutdown()
         super.onDestroy()
     }
 }

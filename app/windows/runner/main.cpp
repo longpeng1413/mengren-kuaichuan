@@ -13,7 +13,7 @@
 
 namespace {
 
-constexpr wchar_t kWindowTitle[] = L"\u731B\u4EBA\u5FEB\u4F20 v1.9.1";
+constexpr wchar_t kWindowTitle[] = L"\u731B\u4EBA\u5FEB\u4F20 v1.10.0";
 constexpr wchar_t kWindowTitlePrefix[] = L"\u731B\u4EBA\u5FEB\u4F20 v";
 constexpr wchar_t kSingleInstanceMutex[] =
     L"Local\\MengrenLanTransfer.SingleInstance";
@@ -115,10 +115,15 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
 
   std::vector<std::string> command_line_arguments =
       GetCommandLineArguments();
+  // The login entry adds --silent when silent start is on: tray only.
+  const bool start_hidden =
+      std::find(command_line_arguments.begin(), command_line_arguments.end(),
+                "--silent") != command_line_arguments.end();
 
   project.set_dart_entrypoint_arguments(std::move(command_line_arguments));
 
   FlutterWindow window(project);
+  window.set_start_hidden(start_hidden);
   Win32Window::Point origin(10, 10);
   Win32Window::Size size(kWindowWidth, kWindowHeight);
   unsigned int saved_width = 0;

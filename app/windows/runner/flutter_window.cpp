@@ -11,6 +11,7 @@
 
 #include <flutter/standard_method_codec.h>
 
+#include "clipboard_bridge.h"
 #include "flutter/generated_plugin_registrant.h"
 #include "utils.h"
 #include "window_size_store.h"
@@ -125,12 +126,68 @@ bool FlutterWindow::OnCreate() {
           flutter_controller_->engine()->messenger(), kPlatformChannel,
           &flutter::StandardMethodCodec::GetInstance());
   platform_channel_->SetMethodCallHandler(
-      [](const flutter::MethodCall<flutter::EncodableValue>& call,
-         std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>
-             result) {
-        if (call.method_name() == "networkInterfaces") {
+      [this](const flutter::MethodCall<flutter::EncodableValue>& call,
+             std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>
+                 result) {
+        const std::string& method = call.method_name();
+        if (method == "networkInterfaces") {
           result->Success(flutter::EncodableValue(
               GetWindowsNetworkInterfaces()));
+          return;
+        }
+        if (method == "clipboardPeek") {
+          const clipboard_bridge::Peek peek = clipboard_bridge::PeekClipboard();
+          result->Success(flutter::EncodableValue(flutter::EncodableMap{
+              {flutter::EncodableValue("files"),
+               flutter::EncodableValue(peek.files)},
+              {flutter::EncodableValue("image"),
+               flutter::EncodableValue(peek.image)},
+              {flutter::EncodableValue("text"),
+               flutter::EncodableValue(peek.text)},
+          }));
+          return;
+        }
+        if (method == "clipboardFiles") {
+          int skipped_folders = 0;
+          flutter::EncodableList files;
+          for (const std::string& path :
+               clipboard_bridge::ReadClipboardFiles(skipped_folders)) {
+            files.emplace_back(path);
+          }
+          result->Success(flutter::EncodableValue(flutter::EncodableMap{
+              {flutter::EncodableValue("files"), flutter::EncodableValue(files)},
+              {flutter::EncodableValue("skippedFolders"),
+               flutter::EncodableValue(skipped_folders)},
+          }));
+          return;
+        }
+        if (method == "clipboardImagePng") {
+          std::vector<uint8_t> png = clipboard_bridge::ReadClipboardImagePng();
+          if (png.empty()) {
+            result->Success();
+          } else {
+            result->Success(flutter::EncodableValue(std::move(png)));
+          }
+          return;
+        }
+        if (method == "copyFilesToClipboard") {
+          std::vector<std::string> paths;
+          if (const auto* arguments =
+                  std::get_if<flutter::EncodableMap>(call.arguments())) {
+            const auto found = arguments->find(flutter::EncodableValue("paths"));
+            if (found != arguments->end()) {
+              if (const auto* list =
+                      std::get_if<flutter::EncodableList>(&found->second)) {
+                for (const auto& item : *list) {
+                  if (const auto* path = std::get_if<std::string>(&item)) {
+                    paths.push_back(*path);
+                  }
+                }
+              }
+            }
+          }
+          result->Success(flutter::EncodableValue(
+              clipboard_bridge::CopyFilesToClipboard(GetHandle(), paths)));
           return;
         }
         result->NotImplemented();
@@ -138,7 +195,9 @@ bool FlutterWindow::OnCreate() {
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
-    this->Show();
+    if (!start_hidden_) {
+      this->Show();
+    }
   });
 
   // Flutter can complete the first frame before the "show window" callback is

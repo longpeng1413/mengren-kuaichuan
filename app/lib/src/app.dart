@@ -9,6 +9,8 @@ import 'package:path_provider/path_provider.dart';
 
 import 'chat/chat_message.dart';
 import 'chat/chat_page.dart';
+import 'chat/chat_quote.dart';
+import 'chat/clipboard_files.dart';
 import 'chat/offline_outbox.dart';
 import 'app_version.dart';
 import 'background/background_receive.dart';
@@ -1653,6 +1655,7 @@ class _DeviceListPageState extends State<DeviceListPage>
           filePath: isSharedCache ? null : file.path,
           displayLocation: isSharedCache ? '系统共享缓存已自动清理' : file.path,
           fileSize: fileSize,
+          isCache: !isSharedCache && OutgoingCache.instance.contains(file.path),
         ),
       );
       if (_sharedCachePaths.remove(file.path) && await file.exists()) {
@@ -1940,6 +1943,8 @@ class _DeviceListPageState extends State<DeviceListPage>
             filePath: isSharedCache ? null : file.path,
             displayLocation: isSharedCache ? '系统共享缓存已自动清理' : file.path,
             fileSize: fileSize,
+            isCache:
+                !isSharedCache && OutgoingCache.instance.contains(file.path),
           ),
         );
         if (_sharedCachePaths.remove(file.path) && await file.exists()) {
@@ -1997,7 +2002,12 @@ class _DeviceListPageState extends State<DeviceListPage>
     return null;
   }
 
-  Future<void> _openChat(DiscoveredDevice device) async {
+  /// [forwardFiles]: files forwarded from another conversation, sent as soon
+  /// as this one opens so its progress and stop button are visible.
+  Future<void> _openChat(
+    DiscoveredDevice device, {
+    List<String> forwardFiles = const [],
+  }) async {
     final sharedFiles = List<String>.from(_pendingSharedFiles);
     if (sharedFiles.isNotEmpty) {
       setState(() => _pendingSharedFiles.clear());
@@ -2015,12 +2025,15 @@ class _DeviceListPageState extends State<DeviceListPage>
             filePaths: filePaths,
             cancellation: cancellation,
           ),
-          initialFilePaths: sharedFiles,
+          initialFilePaths: [...sharedFiles, ...forwardFiles],
           onClearConversation: (deleteCache) =>
               _clearConversation(device.deviceId, deleteCache: deleteCache),
           onRemoveDevice: () => _removeDevice(device),
           onDiscardUndelivered: (messageId) =>
               _removeChatMessage(device.deviceId, messageId),
+          onDeleteMessage: (message) => _deleteChatMessage(message),
+          onForward: _forwardMessage,
+          forwardTargets: () => _devices,
           onCancelIncomingTransfer: device.isRemote
               ? (transferId) =>
                     _cancelIncomingRemoteTransfer(device.deviceId, transferId)
@@ -2037,6 +2050,61 @@ class _DeviceListPageState extends State<DeviceListPage>
     }
   }
 
+  /// Long-press 删除. A cache file (pasted picture, forwarded copy, Android
+  /// fallback copy) goes with the message unless another message uses it.
+  Future<void> _deleteChatMessage(ChatMessage message) async {
+    _removeChatMessage(message.peerId, message.id);
+    await _diagnostics.log('chat_message_deleted kind=${message.kind.name}');
+    final filePath = message.filePath;
+    if (!message.isCache || filePath == null || _isFileReferenced(filePath)) {
+      return;
+    }
+    final file = File(filePath);
+    if (await file.exists()) await file.delete();
+  }
+
+  bool _isFileReferenced(String filePath) => _chatHistory.values.any(
+    (messages) => messages.any((message) => message.filePath == filePath),
+  );
+
+  /// Long-press 转发. Text goes out in the background (queued if the target
+  /// is offline). A file opens the target conversation and is sent there, so
+  /// its progress and stop button are visible.
+  Future<String?> _forwardMessage(
+    ChatMessage message,
+    DiscoveredDevice target,
+  ) async {
+    await _diagnostics.log(
+      'chat_forward kind=${message.kind.name} '
+      'route=${target.connectionMode.name}',
+    );
+    if (message.kind == ChatMessageKind.text) {
+      final text = parseQuotedText(message.text ?? '').reply.trim();
+      if (text.isEmpty) throw const TransferException('这条消息没有可以转发的文字');
+      await _sendText(target, text);
+      return _onlineDeviceFor(target.deviceId) == null
+          ? '${target.displayName} 不在线，上线后自动发送'
+          : '已转发给 ${target.displayName}';
+    }
+    final filePath = await _forwardableFile(message);
+    if (!mounted) return null;
+    Navigator.of(context).popUntil((route) => route.isFirst);
+    unawaited(_openChat(target, forwardFiles: [filePath]));
+    return null;
+  }
+
+  /// A readable local copy of a file message. Android files saved through
+  /// 系统下载 only have a content URI and are copied to the outgoing cache.
+  Future<String> _forwardableFile(ChatMessage message) async {
+    final filePath = message.filePath;
+    if (filePath != null && await File(filePath).exists()) return filePath;
+    final contentUri = message.contentUri;
+    if (Platform.isAndroid && contentUri != null) {
+      return PlatformClipboardFiles.instance.copyContentUriToCache(contentUri);
+    }
+    throw const TransferException('文件已被移动或删除，无法转发');
+  }
+
   Future<void> _clearConversation(
     String deviceId, {
     required bool deleteCache,
@@ -2045,7 +2113,8 @@ class _DeviceListPageState extends State<DeviceListPage>
     if (deleteCache) {
       for (final message in messages.where((message) => message.isCache)) {
         final filePath = message.filePath;
-        if (filePath == null) continue;
+        // The same pasted picture may have been sent to another device too.
+        if (filePath == null || _isFileReferenced(filePath)) continue;
         final file = File(filePath);
         if (await file.exists()) await file.delete();
       }
