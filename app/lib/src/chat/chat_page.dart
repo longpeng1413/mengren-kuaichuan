@@ -20,6 +20,7 @@ import 'clipboard_files.dart';
 import '../voice/speech_download_dialog.dart';
 import '../voice/speech_service.dart';
 import '../voice/voice_audio.dart';
+import '../voice/voice_level.dart';
 import '../voice/voice_store.dart';
 
 typedef SendChatText = Future<void> Function(String text);
@@ -743,6 +744,8 @@ class _ChatPageState extends State<ChatPage> {
       _showNotice('录音保存失败：${_describe(error)}');
       return;
     }
+    // Laptop/USB-camera microphones record far below normal speech level.
+    await _normalizeQuietly(voice);
     if (mounted) await _sendFiles([voice.path]);
   }
 
@@ -769,6 +772,7 @@ class _ChatPageState extends State<ChatPage> {
     }
     setState(() => _dictating = true);
     try {
+      await _normalizeQuietly(recorded.file);
       final text = await _speech.transcribe(recorded.file.path);
       if (!mounted) return;
       if (text.isEmpty) {
@@ -792,6 +796,13 @@ class _ChatPageState extends State<ChatPage> {
       await _deleteQuietly(recorded.file);
       if (mounted) setState(() => _dictating = false);
     }
+  }
+
+  /// A failed volume adjustment must never stop the message itself.
+  static Future<void> _normalizeQuietly(File file) async {
+    try {
+      await normalizeVoiceFile(file);
+    } catch (_) {}
   }
 
   static Future<void> _deleteQuietly(File file) async {

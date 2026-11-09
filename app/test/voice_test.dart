@@ -1,5 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
@@ -12,6 +14,7 @@ import 'package:lan_transfer/src/discovery/discovered_device.dart';
 import 'package:lan_transfer/src/transfer/transfer_models.dart';
 import 'package:lan_transfer/src/voice/speech_service.dart';
 import 'package:lan_transfer/src/voice/voice_audio.dart';
+import 'package:lan_transfer/src/voice/voice_level.dart';
 import 'package:lan_transfer/src/voice/voice_store.dart';
 import 'package:path/path.dart' as p;
 
@@ -94,6 +97,93 @@ void main() {
       (json as Map<String, dynamic>).remove('transcript');
       expect(ChatMessage.tryFromJson(json)!.transcript, isNull);
       expect(message.withDelivery(null).transcript, '你好');
+    });
+  });
+
+  group('voice volume', () {
+    /// A 16 kHz mono 16-bit WAV with a JUNK chunk before "fmt ", like the
+    /// files Windows' recorder writes, holding a sine of [amplitude].
+    /// [spike]: one loud sample, so the peak sits far above the average
+    /// like real speech (a pure tone's peak is only 3 dB above it).
+    Uint8List wav(
+      int amplitude, {
+      int seconds = 2,
+      int bits = 16,
+      int spike = 0,
+    }) {
+      final samples = 16000 * seconds;
+      final data = BytesBuilder();
+      final pcm = ByteData(samples * 2);
+      for (var i = 0; i < samples; i++) {
+        final value = (amplitude * math.sin(2 * math.pi * 440 * i / 16000))
+            .round();
+        pcm.setInt16(i * 2, value, Endian.little);
+      }
+      if (spike > 0) pcm.setInt16(samples, spike, Endian.little);
+      ByteData u32(int v) => ByteData(4)..setUint32(0, v, Endian.little);
+      ByteData u16(int v) => ByteData(2)..setUint16(0, v, Endian.little);
+      void put(ByteData d) => data.add(d.buffer.asUint8List());
+      final body = pcm.buffer.asUint8List();
+      data.add('RIFF'.codeUnits);
+      put(u32(4 + 36 + 16 + 8 + body.length));
+      data.add('WAVE'.codeUnits);
+      data.add('JUNK'.codeUnits);
+      put(u32(28));
+      data.add(Uint8List(28));
+      data.add('fmt '.codeUnits);
+      put(u32(16));
+      put(u16(1));
+      put(u16(1));
+      put(u32(16000));
+      put(u32(32000));
+      put(u16(2));
+      put(u16(bits));
+      data.add('data'.codeUnits);
+      put(u32(body.length));
+      data.add(body);
+      return data.toBytes();
+    }
+
+    test('a quiet recording is raised to normal speech level', () {
+      // Average about -37 dBFS, like the quiet laptop recordings.
+      final quiet = wav(650);
+      final before = measureVoiceLevel(quiet)!;
+      expect(before.rmsDb, closeTo(-37, 1));
+      final louder = normalizeVoiceBytes(quiet)!;
+      final after = measureVoiceLevel(louder)!;
+      expect(after.rmsDb, closeTo(-20, 0.3));
+      expect(after.peakDb, lessThanOrEqualTo(-1));
+      expect(louder.length, quiet.length);
+    });
+
+    test('boost is capped at 24 dB so a near-silent recording stays low', () {
+      final faint = wav(100); // average -53 dBFS
+      final before = measureVoiceLevel(faint)!;
+      final after = measureVoiceLevel(normalizeVoiceBytes(faint)!)!;
+      expect(after.rmsDb - before.rmsDb, closeTo(24, 0.3));
+    });
+
+    test('the peak limits the boost and loud recordings stay untouched', () {
+      // Speech-like: quiet on average (-44 dBFS) with a peak at -12 dBFS.
+      final speech = wav(300, spike: 8000);
+      final after = measureVoiceLevel(normalizeVoiceBytes(speech)!)!;
+      expect(after.peakDb, closeTo(-1, 0.2), reason: '不能削波失真');
+      expect(normalizeVoiceBytes(wav(30000)), isNull);
+      expect(normalizeVoiceBytes(wav(0)), isNull, reason: '全是静音');
+      expect(normalizeVoiceBytes(wav(650, bits: 8)), isNull);
+      expect(normalizeVoiceBytes(Uint8List.fromList(utf8.encode('不是 wav'))),
+          isNull);
+    });
+
+    test('normalizes a file in place', () async {
+      final dir = Directory.systemTemp.createTempSync('mengren_lvl_');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final file = File(p.join(dir.path, '语音消息_20261109_103012_2s.wav'))
+        ..writeAsBytesSync(wav(1200));
+      final gain = await normalizeVoiceFile(file);
+      expect(gain, closeTo(11.7, 0.5));
+      expect(measureVoiceLevel(file.readAsBytesSync())!.peakDb,
+          lessThanOrEqualTo(-1));
     });
   });
 

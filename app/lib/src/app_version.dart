@@ -1,5 +1,5 @@
-const appVersion = '1.11.1';
-const appBuildNumber = 37;
+const appVersion = '1.11.2';
+const appBuildNumber = 38;
 
 /// Shown under the icon in Settings.
 const appAuthor = 'longpeng1413';

@@ -34,6 +34,7 @@ import 'ui/app_theme.dart';
 import 'ui/device_home_view.dart';
 import 'update/app_update_service.dart';
 import 'update/update_flow.dart';
+import 'voice/voice_level.dart';
 import 'voice/voice_store.dart';
 
 typedef SaveIdentity = Future<void> Function(DeviceIdentity identity);
@@ -1225,7 +1226,17 @@ class _DeviceListPageState extends State<DeviceListPage>
   /// in the download folder, so they can be played and transcribed.
   Future<void> _finalizeVoiceMessage(CompletedTransfer transfer) async {
     final stored = await VoiceStore.instance.adoptReceived(transfer.file);
-    unawaited(_diagnostics.log('voice_received bytes=${transfer.fileSize}'));
+    // Senders before v1.11.2 sent quiet recordings as they were.
+    var gain = 0.0;
+    try {
+      gain = await normalizeVoiceFile(stored);
+    } catch (_) {}
+    unawaited(
+      _diagnostics.log(
+        'voice_received bytes=${transfer.fileSize} '
+        'gain_db=${gain.toStringAsFixed(1)}',
+      ),
+    );
     if (!mounted) return;
     _incomingProgressFor(transfer.senderId).value = null;
     _appendChat(
