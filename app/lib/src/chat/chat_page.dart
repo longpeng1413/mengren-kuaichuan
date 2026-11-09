@@ -12,6 +12,7 @@ import '../storage/received_file_service.dart';
 import '../transfer/transfer_client.dart' show TransferException;
 import '../transfer/transfer_models.dart';
 import 'chat_message.dart';
+import 'chat_dates.dart';
 import 'chat_quote.dart';
 import 'chat_text_message.dart';
 import 'chat_thumbnail.dart';
@@ -958,12 +959,7 @@ class _ChatPageState extends State<ChatPage> {
                             final quote = message.kind == ChatMessageKind.text
                                 ? parseQuotedText(message.text ?? '').quote
                                 : null;
-                            return KeyedSubtree(
-                              key: _messageKeys.putIfAbsent(
-                                message.id,
-                                () => GlobalKey(),
-                              ),
-                              child: _MessageBubble(
+                            final bubble = _MessageBubble(
                                 message: message,
                                 highlighted: message.id == _highlightedId,
                                 onTapQuote: quote == null
@@ -983,7 +979,30 @@ class _ChatPageState extends State<ChatPage> {
                                     : () => widget.onDiscardUndelivered!(
                                         message.id,
                                       ),
+                            );
+                            // WeChat-style: one date bar above the first
+                            // message of each day.
+                            final newDay = startsNewDay(
+                              index == 0 ? null : messages[index - 1].sentAt,
+                              message.sentAt,
+                            );
+                            return KeyedSubtree(
+                              key: _messageKeys.putIfAbsent(
+                                message.id,
+                                () => GlobalKey(),
                               ),
+                              child: newDay
+                                  ? Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.stretch,
+                                      children: [
+                                        _DaySeparator(
+                                          label: chatDayLabel(message.sentAt),
+                                        ),
+                                        bubble,
+                                      ],
+                                    )
+                                  : bubble,
                             );
                           },
                         );
@@ -1571,6 +1590,39 @@ IconData _fileIconFor(String name) {
       return Icons.table_chart_outlined;
     default:
       return Icons.insert_drive_file_outlined;
+  }
+}
+
+/// The centred date bar between days (今天 / 昨天 / 星期三 / 11月3日).
+class _DaySeparator extends StatelessWidget {
+  const _DaySeparator({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(top: 6, bottom: 14),
+      child: Center(
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+          decoration: BoxDecoration(
+            color: theme.colorScheme.surfaceContainerHighest.withValues(
+              alpha: 0.7,
+            ),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Text(
+            label,
+            key: const Key('day_separator'),
+            style: theme.textTheme.labelSmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 

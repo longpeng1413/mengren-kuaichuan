@@ -8,8 +8,31 @@ import 'package:path/path.dart' as path;
 import '../discovery/discovered_device.dart';
 import 'transfer_models.dart';
 
+/// Shown when the connection is cut without an answer from the receiver.
+/// Seen in practice with AdGuard filtering 猛人快传.exe on the sender.
+const interceptedConnectionHint =
+    '可能被 AdGuard、杀毒软件或防火墙等拦截，可在该软件里把猛人快传设为不过滤';
+
+/// How far a file send got when the connection dropped.
+enum _SendStage { offer, content, awaitingReply }
+
+class _ConnectionDropped implements Exception {
+  const _ConnectionDropped(this.stage, this.detail);
+
+  final _SendStage stage;
+  final String detail;
+}
+
 class TransferClient {
-  const TransferClient();
+  const TransferClient({this.retryDelay = const Duration(milliseconds: 600)});
+
+  /// Pause before retrying an offer whose connection was cut; tests use zero.
+  final Duration retryDelay;
+
+  /// Retries only cover drops before any file data left, within this time of
+  /// asking: later the receiver may be showing a confirmation dialog.
+  static const _quickDropWindow = Duration(seconds: 3);
+  static const _maximumAttempts = 3;
 
   Future<String> sendText({
     required DiscoveredDevice receiver,
@@ -50,8 +73,10 @@ class TransferClient {
       return messageId;
     } on SocketException catch (error) {
       throw TransferException('无法连接接收设备：${error.message}', unreachable: true);
-    } on HttpException catch (error) {
-      throw TransferException('消息连接中断：${error.message}');
+    } on HttpException {
+      throw const TransferException(
+        '消息发出后连接被断开，对方可能已经收到；$interceptedConnectionHint',
+      );
     } finally {
       client.close(force: true);
     }
@@ -65,7 +90,52 @@ class TransferClient {
     TransferProgress? onProgress,
     TransferCancellationToken? cancellation,
   }) async {
+    for (var attempt = 1; ; attempt++) {
+      final started = Stopwatch()..start();
+      try {
+        return await _sendFileOnce(
+          receiver: receiver,
+          senderId: senderId,
+          senderName: senderName,
+          file: file,
+          onProgress: onProgress,
+          cancellation: cancellation,
+        );
+      } on _ConnectionDropped catch (dropped) {
+        if (cancellation?.isCancelled ?? false) {
+          throw const TransferCancelledException();
+        }
+        // Nothing of the file has left yet, so asking again cannot create a
+        // duplicate on the receiver.
+        if (dropped.stage == _SendStage.offer &&
+            started.elapsed < _quickDropWindow &&
+            attempt < _maximumAttempts) {
+          await Future<void>.delayed(retryDelay * attempt);
+          continue;
+        }
+        throw TransferException(switch (dropped.stage) {
+          _SendStage.offer =>
+            '连接被中途断开，文件还没有发出；$interceptedConnectionHint',
+          _SendStage.content =>
+            '传输到一半连接被断开，文件没有发完；$interceptedConnectionHint',
+          _SendStage.awaitingReply =>
+            '文件已全部发出，但没收到对方的确认：对方可能已经收到，'
+                '请先在对方那边确认，不要急着重发；$interceptedConnectionHint',
+        });
+      }
+    }
+  }
+
+  Future<TransferResult> _sendFileOnce({
+    required DiscoveredDevice receiver,
+    required String senderId,
+    required String senderName,
+    required File file,
+    TransferProgress? onProgress,
+    TransferCancellationToken? cancellation,
+  }) async {
     final transferId = _randomClientId();
+    var stage = _SendStage.offer;
     final client = HttpClient()..connectionTimeout = const Duration(seconds: 5);
     final removeCancellationListener = cancellation?.addListener(() {
       unawaited(_cancelRemoteTransfer(receiver, transferId));
@@ -120,10 +190,12 @@ class TransferClient {
       final contentRequest = await client.putUrl(contentUri);
       contentRequest.contentLength = fileSize;
       onProgress?.call(0, fileSize);
+      stage = _SendStage.content;
       await contentRequest.addStream(
         _fileChunksWithProgress(file, fileSize, onProgress, cancellation),
       );
       cancellation?.throwIfCancelled();
+      stage = _SendStage.awaitingReply;
       final contentResponse = await contentRequest.close();
       final contentBody = await utf8.decoder.bind(contentResponse).join();
       if (contentResponse.statusCode != HttpStatus.ok) {
@@ -145,14 +217,21 @@ class TransferClient {
       if (cancellation?.isCancelled ?? false) {
         throw const TransferCancelledException();
       }
+      // Once the receiver agreed, a socket error is a cut connection, not an
+      // offline device (which would wrongly queue the file for later).
+      if (stage != _SendStage.offer) {
+        throw _ConnectionDropped(stage, error.message);
+      }
       throw TransferException('无法连接接收设备：${error.message}', unreachable: true);
     } on HttpException catch (error) {
       if (cancellation?.isCancelled ?? false) {
         throw const TransferCancelledException();
       }
-      throw TransferException('传输连接中断：${error.message}');
+      throw _ConnectionDropped(stage, error.message);
     } on FormatException {
       throw const TransferException('接收方返回了无法识别的数据');
+    } on _ConnectionDropped {
+      rethrow;
     } catch (_) {
       if (cancellation?.isCancelled ?? false) {
         throw const TransferCancelledException();

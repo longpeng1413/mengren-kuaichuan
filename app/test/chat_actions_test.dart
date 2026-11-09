@@ -480,6 +480,43 @@ void main() {
       expect(rowDecoration()?.color, Colors.transparent);
     });
 
+    testWidgets('one date bar above the first message of each day', (
+      tester,
+    ) async {
+      final now = DateTime.now();
+      ChatMessage at(String id, DateTime time) => ChatMessage(
+        id: id,
+        peerId: 'phone',
+        peerName: '手机',
+        senderId: 'phone',
+        senderName: '华为手机',
+        kind: ChatMessageKind.text,
+        sentAt: time,
+        isOutgoing: false,
+        text: id,
+      );
+      final today = DateTime(now.year, now.month, now.day, 0, 5);
+      final yesterday = today.subtract(const Duration(days: 1));
+      await showChat(tester, [
+        at('昨天上午', yesterday.add(const Duration(hours: 9))),
+        at('昨天晚上', yesterday.add(const Duration(hours: 21))),
+        at('今天一早', today),
+        at('今天稍后', today.add(const Duration(minutes: 1))),
+      ]);
+      expect(find.byKey(const Key('day_separator')), findsNWidgets(2));
+      expect(find.text('昨天'), findsOneWidget);
+      expect(find.text('今天'), findsOneWidget);
+      // The bar sits above the first message of the day.
+      expect(
+        tester.getTopLeft(find.text('今天')).dy,
+        lessThan(tester.getTopLeft(find.text('今天一早')).dy),
+      );
+      expect(
+        tester.getTopLeft(find.text('今天')).dy,
+        greaterThan(tester.getTopLeft(find.text('昨天晚上')).dy),
+      );
+    });
+
     testWidgets('a quote whose original was deleted says so', (tester) async {
       final reply = composeQuotedText(
         const ChatQuote(senderName: '华为手机', snippet: '早就删了'),
