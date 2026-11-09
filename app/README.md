@@ -1,17 +1,14 @@
-# lan_transfer
+# 猛人快传 Flutter 客户端（lan_transfer）
 
-A new Flutter project.
+Android 与 Windows 共用的 Flutter 源代码。内部工程名 `lan_transfer`（改名会影响应用数据和 Android 包名，不要改），Windows 便携包里的启动程序名为 `猛人快传.exe`。
 
-## Getting Started
+- 功能介绍和下载：见仓库首页 [README](../README.md)。
+- 代码结构和实现方式：见 [架构说明](../docs/architecture.md)。
+- 开发规则、验证步骤和版本号位置：见 [AGENTS.md](../AGENTS.md)。
 
-This project is a starting point for a Flutter application.
+项目路径含中文，请通过包装脚本运行 Flutter（会临时映射到 `L:` 盘）：
 
-A few resources to get you started if this is your first Flutter project:
-
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
-
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+```powershell
+..\scripts\flutter.ps1 analyze
+..\scripts\flutter.ps1 test
+```
