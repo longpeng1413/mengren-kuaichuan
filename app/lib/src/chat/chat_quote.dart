@@ -38,14 +38,15 @@ bool isImageFileName(String value) {
 }
 
 /// One line describing [message] for a quote: the reply text of a text
-/// message (without its own quote), or "[图片]"/"[文件] name".
+/// message (without its own quote), or "[图片] name"/"[文件] name". The
+/// name lets a tap on the quote find the exact picture again.
 String quoteSnippetFor(ChatMessage message) {
   final String raw;
   if (message.kind == ChatMessageKind.text) {
     raw = parseQuotedText(message.text ?? '').reply;
   } else {
     final name = message.fileName ?? '文件';
-    raw = isImageFileName(name) ? '[图片]' : '[文件] $name';
+    raw = isImageFileName(name) ? '[图片] $name' : '[文件] $name';
   }
   final collapsed = raw.replaceAll(RegExp(r'\s+'), ' ').trim();
   if (collapsed.length <= _maximumSnippetLength) return collapsed;
@@ -74,4 +75,27 @@ String _safeName(String name) {
   final cleaned = name.replaceAll(RegExp(r'[：\n\r]'), ' ').trim();
   if (cleaned.isEmpty) return '对方';
   return cleaned.length <= 40 ? cleaned : cleaned.substring(0, 40);
+}
+
+/// The message a quote in `messages[replyIndex]` refers to: the nearest
+/// earlier message with the same sender and snippet. Quotes carry no message
+/// id (the protocol is unchanged), so a renamed sender falls back to the
+/// nearest message with the same snippet. Returns null when it is gone.
+int? findQuotedMessage(
+  List<ChatMessage> messages,
+  int replyIndex,
+  ChatQuote quote,
+) {
+  int? sameSnippet;
+  for (var index = replyIndex - 1; index >= 0; index--) {
+    final candidate = quoteFor(messages[index]);
+    final matches =
+        candidate.snippet == quote.snippet ||
+        // Test builds quoted pictures as a bare "[图片]".
+        (quote.snippet == '[图片]' && candidate.snippet.startsWith('[图片] '));
+    if (!matches) continue;
+    if (candidate.senderName == quote.senderName) return index;
+    sameSnippet ??= index;
+  }
+  return sameSnippet;
 }

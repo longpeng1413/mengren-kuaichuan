@@ -29,8 +29,10 @@ typedef PickAndSendFiles = Future<void> Function(
 
 /// Forwards [message] to [target]; returns a short note for the user, or null
 /// when the app switched to the target conversation to show the progress.
-typedef ForwardChatMessage =
-    Future<String?> Function(ChatMessage message, DiscoveredDevice target);
+typedef ForwardChatMessage = Future<String?> Function(
+  ChatMessage message,
+  DiscoveredDevice target,
+);
 
 class ChatPage extends StatefulWidget {
   const ChatPage({
@@ -99,6 +101,13 @@ class _ChatPageState extends State<ChatPage> {
   /// The message shown above the input box while replying with a quote.
   ChatMessage? _quoting;
 
+  /// One key per message row, so a tapped quote can scroll to the original.
+  final Map<String, GlobalKey> _messageKeys = {};
+
+  /// The original message briefly highlighted after jumping to it.
+  String? _highlightedId;
+  Timer? _highlightTimer;
+
   ClipboardFileSource get _clipboard =>
       widget.clipboard ?? PlatformClipboardFiles.instance;
 
@@ -127,11 +136,109 @@ class _ChatPageState extends State<ChatPage> {
     _textController.dispose();
     _inputFocus.dispose();
     _scrollController.dispose();
+    _highlightTimer?.cancel();
     super.dispose();
   }
 
   void _messagesChanged() {
+    final ids = {for (final message in widget.messages.value) message.id};
+    _messageKeys.removeWhere((id, _) => !ids.contains(id));
     WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
+  }
+
+  // ---- 点击引用跳到原消息 ----
+
+  Future<void> _jumpToQuoted(
+    List<ChatMessage> messages,
+    int replyIndex,
+    ChatQuote quote,
+  ) async {
+    final targetIndex = findQuotedMessage(messages, replyIndex, quote);
+    if (targetIndex == null) {
+      _showNotice('找不到原消息，可能已经被删除');
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('跳转到原消息？'),
+        content: Text(
+          '${quote.senderName}：${quote.snippet}',
+          maxLines: 4,
+          overflow: TextOverflow.ellipsis,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('跳转'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    final target = messages[targetIndex];
+    if (!await _scrollToMessage(messages, targetIndex)) {
+      _showNotice('没能定位到原消息');
+      return;
+    }
+    if (!mounted) return;
+    _highlightTimer?.cancel();
+    setState(() => _highlightedId = target.id);
+    _highlightTimer = Timer(const Duration(milliseconds: 1800), () {
+      if (mounted) setState(() => _highlightedId = null);
+    });
+  }
+
+  /// Rows have different heights and far rows are not built yet, so jump to
+  /// the estimated position first, then step a screen at a time until the
+  /// row exists, and finally scroll it smoothly into view.
+  Future<bool> _scrollToMessage(List<ChatMessage> messages, int index) async {
+    final id = messages[index].id;
+    for (var attempt = 0; attempt < 60; attempt++) {
+      final rowContext = _messageKeys[id]?.currentContext;
+      if (rowContext != null && rowContext.mounted) {
+        await Scrollable.ensureVisible(
+          rowContext,
+          alignment: 0.3,
+          duration: const Duration(milliseconds: 280),
+          curve: Curves.easeOut,
+        );
+        return true;
+      }
+      if (!_scrollController.hasClients) return false;
+      final position = _scrollController.position;
+      final double next;
+      if (attempt == 0) {
+        next = messages.length <= 1
+            ? 0
+            : position.maxScrollExtent * index / (messages.length - 1);
+      } else {
+        int? firstBuilt;
+        for (var i = 0; i < messages.length; i++) {
+          if (_messageKeys[messages[i].id]?.currentContext != null) {
+            firstBuilt = i;
+            break;
+          }
+        }
+        if (firstBuilt == null) return false;
+        final step = position.viewportDimension * 0.8;
+        next = index < firstBuilt
+            ? position.pixels - step
+            : position.pixels + step;
+      }
+      final clamped = next
+          .clamp(position.minScrollExtent, position.maxScrollExtent)
+          .toDouble();
+      if (attempt > 0 && clamped == position.pixels) return false;
+      position.jumpTo(clamped);
+      await WidgetsBinding.instance.endOfFrame;
+      if (!mounted) return false;
+    }
+    return false;
   }
 
   void _incomingProgressChanged() {
@@ -433,7 +540,9 @@ class _ChatPageState extends State<ChatPage> {
           () => unawaited(_copyMessage(message)),
           icon: Icons.copy_rounded,
         ),
-      if (!isText && localFile && _clipboard.canCopyFiles)
+      if (!isText &&
+          _clipboard.canCopyFiles &&
+          (localFile || (Platform.isAndroid && message.contentUri != null)))
         ChatMessageAction(
           '复制',
           () => unawaited(_copyMessage(message)),
@@ -486,12 +595,24 @@ class _ChatPageState extends State<ChatPage> {
         return;
       }
       final filePath = message.filePath;
-      if (filePath == null || !File(filePath).existsSync()) {
+      final localFile = filePath != null && File(filePath).existsSync();
+      // Android files saved through 系统下载 only have a content URI.
+      final source = localFile
+          ? filePath
+          : Platform.isAndroid
+          ? message.contentUri
+          : null;
+      if (source == null) {
         throw const FileSystemException('文件已被移动或删除');
       }
-      await _clipboard.copyFiles([filePath]);
+      await _clipboard.copyFiles([source]);
+      final picture = isImageFileName(message.fileName ?? filePath ?? '');
       _showNotice(
-        isImageFileName(filePath)
+        Platform.isAndroid
+            ? (picture
+                  ? '图片已复制，可以到微信等应用里长按输入框粘贴'
+                  : '文件已复制，可以到支持粘贴文件的应用里粘贴')
+            : picture
             ? '图片已复制，可以粘贴到微信、QQ、画图或文件夹里'
             : '文件已复制，可以粘贴到文件夹或微信里',
       );
@@ -834,20 +955,35 @@ class _ChatPageState extends State<ChatPage> {
                           itemCount: messages.length,
                           itemBuilder: (context, index) {
                             final message = messages[index];
-                            return _MessageBubble(
-                              message: message,
-                              actions: _actionsFor(message),
-                              textMenuActions: _actionsFor(
-                                message,
-                                inTextMenu: true,
+                            final quote = message.kind == ChatMessageKind.text
+                                ? parseQuotedText(message.text ?? '').quote
+                                : null;
+                            return KeyedSubtree(
+                              key: _messageKeys.putIfAbsent(
+                                message.id,
+                                () => GlobalKey(),
                               ),
-                              onDiscard:
-                                  message.deliveryState == null ||
-                                      widget.onDiscardUndelivered == null
-                                  ? null
-                                  : () => widget.onDiscardUndelivered!(
-                                      message.id,
-                                    ),
+                              child: _MessageBubble(
+                                message: message,
+                                highlighted: message.id == _highlightedId,
+                                onTapQuote: quote == null
+                                    ? null
+                                    : () => unawaited(
+                                        _jumpToQuoted(messages, index, quote),
+                                      ),
+                                actions: _actionsFor(message),
+                                textMenuActions: _actionsFor(
+                                  message,
+                                  inTextMenu: true,
+                                ),
+                                onDiscard:
+                                    message.deliveryState == null ||
+                                        widget.onDiscardUndelivered == null
+                                    ? null
+                                    : () => widget.onDiscardUndelivered!(
+                                        message.id,
+                                      ),
+                              ),
                             );
                           },
                         );
@@ -1115,6 +1251,8 @@ class _MessageBubble extends StatelessWidget {
     this.actions = const [],
     this.textMenuActions = const [],
     this.onDiscard,
+    this.onTapQuote,
+    this.highlighted = false,
   });
 
   final ChatMessage message;
@@ -1127,6 +1265,12 @@ class _MessageBubble extends StatelessWidget {
 
   /// Cancels a queued item or deletes a failed one.
   final VoidCallback? onDiscard;
+
+  /// Tap on the grey quote: asks, then scrolls to the original message.
+  final VoidCallback? onTapQuote;
+
+  /// Briefly true for the original message after jumping to it.
+  final bool highlighted;
 
   @override
   Widget build(BuildContext context) {
@@ -1189,26 +1333,38 @@ class _MessageBubble extends StatelessWidget {
     void showMenuAt(Offset position) =>
         unawaited(_showMessageMenu(context, position, actions));
 
-    final bubble = Align(
-      alignment: outgoing ? Alignment.centerRight : Alignment.centerLeft,
-      child: Padding(
-        padding: const EdgeInsets.only(bottom: 10),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: outgoing
-              ? CrossAxisAlignment.end
-              : CrossAxisAlignment.start,
-          children: [
-            GestureDetector(
-              key: ValueKey('bubble_${message.id}'),
-              onTap: isText ? null : () => _openMessageFile(context, message),
-              onLongPressStart: (details) => showMenuAt(details.globalPosition),
-              onSecondaryTapUp: (details) => showMenuAt(details.globalPosition),
-              child: content,
-            ),
-            if (quoted?.quote != null)
-              _QuotedBlock(quote: quoted!.quote!),
-          ],
+    final bubble = AnimatedContainer(
+      key: ValueKey('row_${message.id}'),
+      duration: const Duration(milliseconds: 250),
+      decoration: BoxDecoration(
+        color: highlighted
+            ? colors.primary.withValues(alpha: 0.14)
+            : Colors.transparent,
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Align(
+        alignment: outgoing ? Alignment.centerRight : Alignment.centerLeft,
+        child: Padding(
+          padding: const EdgeInsets.only(bottom: 10),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: outgoing
+                ? CrossAxisAlignment.end
+                : CrossAxisAlignment.start,
+            children: [
+              GestureDetector(
+                key: ValueKey('bubble_${message.id}'),
+                onTap: isText ? null : () => _openMessageFile(context, message),
+                onLongPressStart: (details) =>
+                    showMenuAt(details.globalPosition),
+                onSecondaryTapUp: (details) =>
+                    showMenuAt(details.globalPosition),
+                child: content,
+              ),
+              if (quoted?.quote != null)
+                _QuotedBlock(quote: quoted!.quote!, onTap: onTapQuote),
+            ],
+          ),
         ),
       ),
     );
@@ -1296,9 +1452,8 @@ Future<void> _openMessageFile(BuildContext context, ChatMessage message) async {
   final filePath = message.filePath;
   final localExists = filePath != null && File(filePath).existsSync();
   if (!localExists && message.contentUri == null) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('文件已被移动或删除')),
-    );
+    ScaffoldMessenger.of(context)
+        .showSnackBar(const SnackBar(content: Text('文件已被移动或删除')));
     return;
   }
   try {
@@ -1324,7 +1479,8 @@ class _FileCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final filePath = message.filePath;
-    final name = message.fileName ?? (filePath == null ? '文件' : path.basename(filePath));
+    final name =
+        message.fileName ?? (filePath == null ? '文件' : path.basename(filePath));
     final localExists = filePath != null && File(filePath).existsSync();
     final canOpen = localExists || message.contentUri != null;
     final size = message.fileSize;
@@ -1420,14 +1576,15 @@ IconData _fileIconFor(String name) {
 
 /// The grey quote under a reply bubble, as in WeChat.
 class _QuotedBlock extends StatelessWidget {
-  const _QuotedBlock({required this.quote});
+  const _QuotedBlock({required this.quote, this.onTap});
 
   final ChatQuote quote;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Container(
+    final block = Container(
       constraints: const BoxConstraints(maxWidth: 420),
       margin: const EdgeInsets.only(top: 4),
       padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 6),
@@ -1443,6 +1600,15 @@ class _QuotedBlock extends StatelessWidget {
         style: theme.textTheme.bodySmall?.copyWith(
           color: theme.colorScheme.onSurfaceVariant,
         ),
+      ),
+    );
+    if (onTap == null) return block;
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: onTap,
+        child: block,
       ),
     );
   }
@@ -1623,9 +1789,7 @@ class _ForwardDialogState extends State<_ForwardDialog> {
                         overflow: TextOverflow.ellipsis,
                       ),
                       subtitle: Text(
-                        device.isOffline
-                            ? '离线 · 上线后自动送达'
-                            : device.routeLabel,
+                        device.isOffline ? '离线 · 上线后自动送达' : device.routeLabel,
                       ),
                       trailing: Icon(
                         _selected?.deviceId == device.deviceId

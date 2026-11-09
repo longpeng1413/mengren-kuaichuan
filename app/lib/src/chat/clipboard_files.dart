@@ -46,11 +46,14 @@ abstract class ClipboardFileSource {
   /// URI is written into [OutgoingCache] first.
   Future<ClipboardAttachments> read();
 
-  /// Whether [copyFiles] is available (Windows only: Explorer, WeChat and
-  /// Paint paste files/images from CF_HDROP and CF_DIB).
+  /// Whether [copyFiles] is available. Windows puts CF_HDROP (+ CF_DIB for
+  /// a picture) on the clipboard; Android puts content URIs, which WeChat and
+  /// other apps paste as the picture/file.
   bool get canCopyFiles;
 
-  Future<void> copyFiles(List<String> paths);
+  /// [items] are local paths; on Android an item may also be a `content://`
+  /// URI (files saved through 系统下载).
+  Future<void> copyFiles(List<String> items);
 }
 
 class PlatformClipboardFiles implements ClipboardFileSource {
@@ -62,7 +65,7 @@ class PlatformClipboardFiles implements ClipboardFileSource {
   );
 
   @override
-  bool get canCopyFiles => Platform.isWindows;
+  bool get canCopyFiles => Platform.isWindows || Platform.isAndroid;
 
   @override
   Future<ClipboardPeek> peek() async {
@@ -113,14 +116,18 @@ class PlatformClipboardFiles implements ClipboardFileSource {
   }
 
   @override
-  Future<void> copyFiles(List<String> paths) async {
-    if (!Platform.isWindows) {
-      throw UnsupportedError('只有电脑版可以把文件复制到剪贴板');
+  Future<void> copyFiles(List<String> items) async {
+    if (!canCopyFiles) {
+      throw UnsupportedError('这个系统不支持把文件复制到剪贴板');
     }
     final ok = await _channel.invokeMethod<bool>('copyFilesToClipboard', {
-      'paths': paths,
+      'paths': items,
     });
-    if (ok != true) throw const FileSystemException('剪贴板被其他程序占用，请重试');
+    if (ok != true) {
+      throw FileSystemException(
+        Platform.isWindows ? '剪贴板被其他程序占用，请重试' : '无法把文件放进剪贴板',
+      );
+    }
   }
 
   /// Android: copies a content URI (a file saved to 系统下载) into the

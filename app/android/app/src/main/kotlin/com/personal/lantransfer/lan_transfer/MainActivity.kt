@@ -145,6 +145,10 @@ class MainActivity : FlutterActivity() {
                         call.argument<String>("directory"),
                         result,
                     )
+                    "copyFilesToClipboard" -> clipboardSupport.copyToClipboard(
+                        call.argument<List<String>>("paths"),
+                        result,
+                    )
                     "loadThumbnail" -> clipboardSupport.loadThumbnail(
                         call.argument<String>("uri"),
                         call.argument<Int>("size") ?: 480,

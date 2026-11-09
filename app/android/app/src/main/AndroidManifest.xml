@@ -65,6 +65,13 @@
         <receiver
             android:name=".UpdateInstallReceiver"
             android:exported="false" />
+        <!-- 复制 on a chat picture/file: read-only URIs for the clipboard.
+             Not exported; apps only get access through the clip grant. -->
+        <provider
+            android:name=".ClipboardFileProvider"
+            android:authorities="${applicationId}.clipboardfiles"
+            android:exported="false"
+            android:grantUriPermissions="true" />
         <service
             android:name=".BackgroundReceiveService"
             android:exported="false"

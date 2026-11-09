@@ -1,5 +1,6 @@
 package com.personal.lantransfer.lan_transfer
 
+import android.content.ClipData
 import android.content.ClipDescription
 import android.content.ClipboardManager
 import android.content.Context
@@ -141,6 +142,47 @@ class ClipboardSupport(
                 null
             }
             mainHandler.post { result.success(bytes) }
+        }
+    }
+
+    /**
+     * 复制 on a picture/file bubble: puts content URIs on the clipboard so
+     * WeChat and other apps paste the picture/file itself. Local files are
+     * served by [ClipboardFileProvider]; files saved through 系统下载 already
+     * have a content URI. The system grants the pasting app read access.
+     */
+    fun copyToClipboard(items: List<String>?, result: MethodChannel.Result) {
+        val uris = mutableListOf<Uri>()
+        for (item in items.orEmpty()) {
+            val uri = if (item.startsWith("content://")) {
+                Uri.parse(item)
+            } else {
+                val file = File(item)
+                if (!file.isFile) {
+                    result.error("missing", "文件已被移动或删除", null)
+                    return
+                }
+                ClipboardFileProvider.uriFor(context, file) ?: run {
+                    result.error("unsupported", "这个文件不在猛人快传的文件夹里，暂时不能复制", null)
+                    return
+                }
+            }
+            uris.add(uri)
+        }
+        if (uris.isEmpty()) {
+            result.error("invalid_arguments", "没有可以复制的文件", null)
+            return
+        }
+        try {
+            val resolver = context.contentResolver
+            val clip = ClipData.newUri(resolver, "猛人快传", uris.first())
+            for (uri in uris.drop(1)) clip.addItem(resolver, ClipData.Item(uri))
+            clipboard.setPrimaryClip(clip)
+            log("clipboard_files_set count=${uris.size}", null)
+            result.success(true)
+        } catch (error: Exception) {
+            log("clipboard_files_set_failed", error)
+            result.error("copy_failed", error.message ?: "无法把文件放进剪贴板", null)
         }
     }
 

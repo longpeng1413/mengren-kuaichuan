@@ -98,7 +98,10 @@ void main() {
     });
 
     test('files are quoted by kind and long text is shortened', () {
-      expect(quoteSnippetFor(_file('f', r'C:\x\photo.JPG')), '[图片]');
+      expect(
+        quoteSnippetFor(_file('f', r'C:\x\photo.JPG')),
+        '[图片] photo.JPG',
+      );
       expect(quoteSnippetFor(_file('f', r'C:\x\a.zip')), '[文件] a.zip');
       final long = quoteSnippetFor(_text('a', '字' * 100));
       expect(long.length, 61);
@@ -122,6 +125,71 @@ void main() {
       );
       expect(parsed.reply, '嗯');
       expect(parsed.quote?.senderName, '张三 的手机');
+    });
+  });
+
+  group('finding the quoted message', () {
+    ChatMessage from(String id, String sender, String text) => ChatMessage(
+      id: id,
+      peerId: 'phone',
+      peerName: '手机',
+      senderId: sender,
+      senderName: sender,
+      kind: ChatMessageKind.text,
+      sentAt: DateTime(2026, 11, 9),
+      isOutgoing: false,
+      text: text,
+    );
+
+    test('picks the nearest earlier message from the same sender', () {
+      final messages = [
+        from('a', '华为手机', '好的'),
+        from('b', '我的电脑', '好的'),
+        from('c', '华为手机', '好的'),
+        from('d', '华为手机', '中间'),
+        from('reply', '我的电脑', 'x'),
+      ];
+      final quote = quoteFor(messages[0]);
+      expect(findQuotedMessage(messages, 4, quote), 2);
+      expect(findQuotedMessage(messages, 2, quote), 0);
+    });
+
+    test('falls back to the snippet after a rename; null when deleted', () {
+      final messages = [from('a', '旧名字', '原文'), from('r', '我', 'x')];
+      expect(
+        findQuotedMessage(
+          messages,
+          1,
+          const ChatQuote(senderName: '新名字', snippet: '原文'),
+        ),
+        0,
+      );
+      expect(
+        findQuotedMessage(
+          messages,
+          1,
+          const ChatQuote(senderName: '旧名字', snippet: '已删除的内容'),
+        ),
+        isNull,
+      );
+    });
+
+    test('pictures are told apart by name', () {
+      final messages = [
+        _file('p1', 'a.png'),
+        _file('p2', 'b.png'),
+        _text('reply', 'x', outgoing: true),
+      ];
+      expect(findQuotedMessage(messages, 2, quoteFor(messages[0])), 0);
+      // Quotes from earlier test builds only said "[图片]".
+      expect(
+        findQuotedMessage(
+          messages,
+          2,
+          const ChatQuote(senderName: '华为手机', snippet: '[图片]'),
+        ),
+        1,
+      );
     });
   });
 
@@ -378,6 +446,50 @@ void main() {
       await tester.tap(find.text('复制'));
       await tester.pumpAndSettle();
       expect(clipboardText, '收到');
+    });
+
+    testWidgets('tapping a quote asks, then scrolls to and highlights it', (
+      tester,
+    ) async {
+      final history = [for (var i = 0; i < 40; i++) _text('m$i', '第$i条消息')];
+      final reply = composeQuotedText(quoteFor(history[0]), '回复第一条');
+      await showChat(tester, [
+        ...history,
+        _text('reply', reply, outgoing: true),
+      ]);
+      expect(find.text('第0条消息'), findsNothing, reason: '原消息不在屏幕上');
+
+      await tester.tap(find.byKey(const Key('quoted_block')));
+      await tester.pumpAndSettle();
+      expect(find.text('跳转到原消息？'), findsOneWidget);
+      await tester.tap(find.widgetWithText(FilledButton, '跳转'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('第0条消息').hitTestable(), findsOneWidget);
+      BoxDecoration? rowDecoration() =>
+          tester
+                  .widget<AnimatedContainer>(
+                    find.byKey(const ValueKey('row_m0')),
+                  )
+                  .decoration
+              as BoxDecoration?;
+      expect(rowDecoration()?.color, isNot(Colors.transparent));
+
+      await tester.pump(const Duration(seconds: 2));
+      await tester.pumpAndSettle();
+      expect(rowDecoration()?.color, Colors.transparent);
+    });
+
+    testWidgets('a quote whose original was deleted says so', (tester) async {
+      final reply = composeQuotedText(
+        const ChatQuote(senderName: '华为手机', snippet: '早就删了'),
+        '嗯',
+      );
+      await showChat(tester, [_text('reply', reply, outgoing: true)]);
+      await tester.tap(find.byKey(const Key('quoted_block')));
+      await tester.pumpAndSettle();
+      expect(find.text('跳转到原消息？'), findsNothing);
+      expect(find.text('找不到原消息，可能已经被删除'), findsOneWidget);
     });
 
     windowsTest('input menu offers 粘贴图片 and sends after confirming', (
