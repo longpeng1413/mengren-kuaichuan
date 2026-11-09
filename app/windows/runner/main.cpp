@@ -13,7 +13,7 @@
 
 namespace {
 
-constexpr wchar_t kWindowTitle[] = L"\u731B\u4EBA\u5FEB\u4F20 v1.11.0";
+constexpr wchar_t kWindowTitle[] = L"\u731B\u4EBA\u5FEB\u4F20 v1.11.1";
 constexpr wchar_t kWindowTitlePrefix[] = L"\u731B\u4EBA\u5FEB\u4F20 v";
 constexpr wchar_t kSingleInstanceMutex[] =
     L"Local\\MengrenLanTransfer.SingleInstance";

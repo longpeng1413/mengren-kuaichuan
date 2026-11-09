@@ -48,8 +48,11 @@ class VoiceStore {
   static const maximumBytes = 500 * 1024 * 1024;
   static const directoryName = 'voice_messages';
 
-  /// Recordings in progress; a leftover one is from a crash.
-  static const recordingSuffix = '.recording';
+  /// Recordings in progress are named `recording_<time>.wav`; a leftover
+  /// one is from a crash. The name must end in `.wav`: Windows Media
+  /// Foundation picks the file format from the extension and fails with
+  /// 0xC00D36D5 ("指定的对象或值不存在") for anything else (v1.11.0 bug).
+  static const recordingPrefix = 'recording_';
 
   final Directory? _fixedDirectory;
   String? _path;
@@ -73,7 +76,7 @@ class VoiceStore {
   Future<File> newRecordingFile(DateTime startedAt) async {
     final root = await directory();
     final stamp = startedAt.microsecondsSinceEpoch;
-    return File(p.join(root.path, 'rec_$stamp.wav$recordingSuffix'));
+    return File(p.join(root.path, '$recordingPrefix$stamp.wav'));
   }
 
   /// Gives a finished recording its final name (with the duration).
@@ -115,7 +118,10 @@ class VoiceStore {
       if (entity is! File) continue;
       try {
         final stat = await entity.stat();
-        if (entity.path.endsWith(recordingSuffix) ||
+        final name = p.basename(entity.path);
+        if (name.startsWith(recordingPrefix) ||
+            // Left by v1.11.0, which named recordings "*.wav.recording".
+            name.endsWith('.recording') ||
             stat.modified.isBefore(cutoff)) {
           removed += stat.size;
           await entity.delete();

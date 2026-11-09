@@ -558,7 +558,10 @@ class _ChatPageState extends State<ChatPage> {
   static String _describe(Object error) => switch (error) {
     FileSystemException(:final message) => message,
     TransferException(:final message) => message,
-    PlatformException(:final message) => message ?? '$error',
+    // Plugins often put the readable text in details (e.g. record on
+    // Windows: code "Record", message null, details "指定的对象或值不存在。").
+    PlatformException(:final message, :final details) =>
+      message ?? details?.toString() ?? '$error',
     _ => '$error',
   };
 

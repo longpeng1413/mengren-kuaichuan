@@ -109,6 +109,9 @@ void main() {
       final store = VoiceStore.forDirectory(directory);
       final startedAt = DateTime(2026, 11, 9, 8, 0, 1);
       final recording = await store.newRecordingFile(startedAt);
+      // Windows picks the recording format from the extension.
+      expect(p.extension(recording.path), '.wav');
+      expect(isVoiceFileName(recording.path), isFalse);
       await recording.writeAsBytes([1, 2, 3]);
       final voice = await store.finishRecording(recording, startedAt, 5);
       expect(p.basename(voice.path), '语音消息_20261109_080001_5s.wav');
@@ -133,13 +136,15 @@ void main() {
         return file;
       }
 
-      final leftover = write('rec_1.wav.recording', 10, Duration.zero);
+      final leftover = write('recording_1.wav', 10, Duration.zero);
+      final oldLeftover = write('rec_2.wav.recording', 5, Duration.zero);
       final old = write('a.wav', 10, const Duration(days: 31));
       final older = write('b.wav', 40, const Duration(days: 2));
       final newer = write('c.wav', 40, const Duration(days: 1));
       final store = VoiceStore.forDirectory(directory);
-      expect(await store.cleanup(now: now, byteLimit: 50), 60);
+      expect(await store.cleanup(now: now, byteLimit: 50), 65);
       expect(leftover.existsSync(), isFalse);
+      expect(oldLeftover.existsSync(), isFalse);
       expect(old.existsSync(), isFalse);
       expect(older.existsSync(), isFalse);
       expect(newer.existsSync(), isTrue);
