@@ -17,6 +17,10 @@ import 'chat_quote.dart';
 import 'chat_text_message.dart';
 import 'chat_thumbnail.dart';
 import 'clipboard_files.dart';
+import '../voice/speech_download_dialog.dart';
+import '../voice/speech_service.dart';
+import '../voice/voice_audio.dart';
+import '../voice/voice_store.dart';
 
 typedef SendChatText = Future<void> Function(String text);
 typedef ClearConversation = Future<void> Function(bool deleteCache);
@@ -50,6 +54,9 @@ class ChatPage extends StatefulWidget {
     this.onForward,
     this.forwardTargets,
     this.clipboard,
+    this.onTranscribed,
+    this.voiceRecorder,
+    this.speech,
     this.initialFilePaths = const [],
     super.key,
   });
@@ -75,6 +82,14 @@ class ChatPage extends StatefulWidget {
 
   /// Pasting pictures/files from the clipboard; tests pass a fake.
   final ClipboardFileSource? clipboard;
+
+  /// Saves the text of a voice message (转文字), or null to hide it.
+  final Future<void> Function(ChatMessage message, String? text)?
+  onTranscribed;
+
+  /// Microphone and offline speech recognition; tests pass fakes.
+  final VoiceRecorder? voiceRecorder;
+  final SpeechEngine? speech;
   final List<String> initialFilePaths;
 
   @override
@@ -112,6 +127,22 @@ class _ChatPageState extends State<ChatPage> {
   ClipboardFileSource get _clipboard =>
       widget.clipboard ?? PlatformClipboardFiles.instance;
 
+  // ---- 语音 ----
+  late final VoiceRecorder _recorder =
+      widget.voiceRecorder ?? PlatformVoiceRecorder();
+  SpeechEngine get _speech => widget.speech ?? const PlatformSpeechEngine();
+
+  /// Holding the mic button records a voice message; tapping it dictates
+  /// text into the input box.
+  _VoiceMode? _recordingMode;
+  DateTime? _recordStartedAt;
+  File? _recordingFile;
+  Future<bool>? _recordingStart;
+  Timer? _recordTicker;
+  bool _cancelArmed = false;
+  bool _dictating = false;
+  final Set<String> _transcribingIds = {};
+
   @override
   void initState() {
     super.initState();
@@ -138,6 +169,13 @@ class _ChatPageState extends State<ChatPage> {
     _inputFocus.dispose();
     _scrollController.dispose();
     _highlightTimer?.cancel();
+    _recordTicker?.cancel();
+    if (_recordingMode != null) {
+      unawaited(_recorder.cancel());
+      final file = _recordingFile;
+      if (file != null) unawaited(file.delete().then((_) {}, onError: (_) {}));
+    }
+    unawaited(VoicePlayer.instance.stop());
     super.dispose();
   }
 
@@ -533,6 +571,8 @@ class _ChatPageState extends State<ChatPage> {
     final isText = message.kind == ChatMessageKind.text;
     final filePath = message.filePath;
     final localFile = filePath != null && File(filePath).existsSync();
+    final isVoice =
+        !isText && isVoiceFileName(message.fileName ?? filePath ?? '');
     return [
       // The text selection menu already has its own 复制.
       if (isText && !inTextMenu)
@@ -572,6 +612,18 @@ class _ChatPageState extends State<ChatPage> {
           () => _showNotice('保存位置：${message.displayLocation}'),
           icon: Icons.info_outline_rounded,
         ),
+      if (isVoice && widget.onTranscribed != null && message.transcript == null)
+        ChatMessageAction(
+          '转文字',
+          () => unawaited(_transcribeMessage(message)),
+          icon: Icons.subtitles_outlined,
+        ),
+      if (isVoice && widget.onTranscribed != null && message.transcript != null)
+        ChatMessageAction(
+          '隐藏文字',
+          () => unawaited(widget.onTranscribed!(message, null)),
+          icon: Icons.subtitles_off_outlined,
+        ),
       if (widget.onDeleteMessage != null)
         ChatMessageAction(
           '删除',
@@ -579,6 +631,203 @@ class _ChatPageState extends State<ChatPage> {
           icon: Icons.delete_outline_rounded,
         ),
     ];
+  }
+
+  // ---- 语音消息与语音输入 ----
+
+  Future<bool> _startRecording(_VoiceMode mode) async {
+    if (_recordingMode != null || _dictating) return false;
+    if (!await _recorder.ensurePermission()) {
+      _showNotice(
+        Platform.isWindows
+            ? '无法使用麦克风：请在 Windows 设置 → 隐私和安全性 → 麦克风 中允许桌面应用访问麦克风'
+            : '没有麦克风权限，请在手机设置里允许猛人快传使用麦克风',
+      );
+      return false;
+    }
+    if (!mounted) return false;
+    await VoicePlayer.instance.stop();
+    final startedAt = DateTime.now();
+    final file = await VoiceStore.instance.newRecordingFile(startedAt);
+    try {
+      await _recorder.start(file.path);
+    } catch (error) {
+      _showNotice('无法开始录音：${_describe(error)}');
+      return false;
+    }
+    if (!mounted) {
+      await _recorder.cancel();
+      return false;
+    }
+    if (Platform.isAndroid) unawaited(HapticFeedback.mediumImpact());
+    setState(() {
+      _recordingMode = mode;
+      _recordStartedAt = startedAt;
+      _recordingFile = file;
+      _cancelArmed = false;
+    });
+    _recordTicker = Timer.periodic(const Duration(milliseconds: 250), (_) {
+      if (!mounted) return;
+      final elapsed = DateTime.now().difference(startedAt);
+      if (elapsed.inSeconds >= maximumVoiceSeconds) {
+        // WeChat-style limit: a voice message is sent at 60 s.
+        unawaited(
+          _recordingMode == _VoiceMode.message
+              ? _finishVoiceMessage(send: true)
+              : _finishDictation(),
+        );
+      } else {
+        setState(() {});
+      }
+    });
+    return true;
+  }
+
+  /// Stops the recorder; returns the recorded file and its length.
+  Future<({File file, Duration length, DateTime startedAt})?>
+  _stopRecording() async {
+    final starting = _recordingStart;
+    if (starting != null && !await starting) return null;
+    final file = _recordingFile;
+    final startedAt = _recordStartedAt;
+    _recordTicker?.cancel();
+    _recordTicker = null;
+    if (file == null || startedAt == null) return null;
+    String? recorded;
+    try {
+      recorded = await _recorder.stop();
+    } catch (_) {}
+    final length = DateTime.now().difference(startedAt);
+    if (mounted) {
+      setState(() {
+        _recordingMode = null;
+        _recordingFile = null;
+        _recordStartedAt = null;
+        _cancelArmed = false;
+      });
+    }
+    return (
+      file: File(recorded ?? file.path),
+      length: length,
+      startedAt: startedAt,
+    );
+  }
+
+  Future<void> _finishVoiceMessage({required bool send}) async {
+    if (_recordingMode != _VoiceMode.message && _recordingStart == null) {
+      return;
+    }
+    final recorded = await _stopRecording();
+    _recordingStart = null;
+    if (recorded == null) return;
+    if (!send || recorded.length < const Duration(seconds: 1)) {
+      await _deleteQuietly(recorded.file);
+      if (send) _showNotice('说话时间太短');
+      return;
+    }
+    final seconds = (recorded.length.inMilliseconds / 1000).round().clamp(
+      1,
+      maximumVoiceSeconds,
+    );
+    final File voice;
+    try {
+      voice = await VoiceStore.instance.finishRecording(
+        recorded.file,
+        recorded.startedAt,
+        seconds,
+      );
+    } catch (error) {
+      _showNotice('录音保存失败：${_describe(error)}');
+      return;
+    }
+    if (mounted) await _sendFiles([voice.path]);
+  }
+
+  Future<void> _toggleDictation() async {
+    if (_recordingMode == _VoiceMode.dictation) {
+      await _finishDictation();
+      return;
+    }
+    if (_recordingMode != null || _dictating || _busy) return;
+    if (!await ensureSpeechModel(context, _speech) || !mounted) return;
+    final start = _startRecording(_VoiceMode.dictation);
+    _recordingStart = start;
+    await start;
+    _recordingStart = null;
+  }
+
+  Future<void> _finishDictation() async {
+    if (_recordingMode != _VoiceMode.dictation) return;
+    final recorded = await _stopRecording();
+    if (recorded == null) return;
+    if (recorded.length < const Duration(milliseconds: 600)) {
+      await _deleteQuietly(recorded.file);
+      return;
+    }
+    setState(() => _dictating = true);
+    try {
+      final text = await _speech.transcribe(recorded.file.path);
+      if (!mounted) return;
+      if (text.isEmpty) {
+        _showNotice('没有识别出文字，请靠近麦克风再说一次');
+        return;
+      }
+      final value = _textController.value;
+      final selection = value.selection;
+      final start = selection.isValid ? selection.start : value.text.length;
+      final end = selection.isValid ? selection.end : value.text.length;
+      final updated = value.text.replaceRange(start, end, text);
+      _textController.value = TextEditingValue(
+        text: updated,
+        selection: TextSelection.collapsed(offset: start + text.length),
+      );
+      _inputFocus.requestFocus();
+    } catch (error) {
+      _showNotice('语音输入失败：${_describe(error)}');
+    } finally {
+      // Dictation audio is only needed for recognition.
+      await _deleteQuietly(recorded.file);
+      if (mounted) setState(() => _dictating = false);
+    }
+  }
+
+  static Future<void> _deleteQuietly(File file) async {
+    try {
+      if (await file.exists()) await file.delete();
+    } catch (_) {}
+  }
+
+  Future<void> _toggleVoicePlayback(ChatMessage message) async {
+    final filePath = message.filePath;
+    if (filePath == null || !File(filePath).existsSync()) {
+      _showNotice('语音已过期或被删除');
+      return;
+    }
+    try {
+      await VoicePlayer.instance.toggle(message.id, filePath);
+    } catch (error) {
+      _showNotice('无法播放：${_describe(error)}');
+    }
+  }
+
+  Future<void> _transcribeMessage(ChatMessage message) async {
+    final save = widget.onTranscribed;
+    final filePath = message.filePath;
+    if (save == null || _transcribingIds.contains(message.id)) return;
+    if (filePath == null || !File(filePath).existsSync()) {
+      _showNotice('语音已过期或被删除，无法转文字');
+      return;
+    }
+    if (!await ensureSpeechModel(context, _speech) || !mounted) return;
+    setState(() => _transcribingIds.add(message.id));
+    try {
+      final text = await _speech.transcribe(filePath);
+      await save(message, text.isEmpty ? '（没有识别出文字）' : text);
+    } catch (error) {
+      _showNotice('转文字失败：${_describe(error)}');
+    } finally {
+      if (mounted) setState(() => _transcribingIds.remove(message.id));
+    }
   }
 
   void _startQuote(ChatMessage message) {
@@ -962,6 +1211,11 @@ class _ChatPageState extends State<ChatPage> {
                             final bubble = _MessageBubble(
                                 message: message,
                                 highlighted: message.id == _highlightedId,
+                              transcribing: _transcribingIds.contains(
+                                message.id,
+                              ),
+                              onPlayVoice: () =>
+                                  unawaited(_toggleVoicePlayback(message)),
                                 onTapQuote: quote == null
                                     ? null
                                     : () => unawaited(
@@ -1010,6 +1264,15 @@ class _ChatPageState extends State<ChatPage> {
                     ),
                   ),
                   const Divider(height: 1),
+                  if (_recordingMode != null || _dictating)
+                    _RecordingBar(
+                      mode: _recordingMode,
+                      elapsed: _recordStartedAt == null
+                          ? Duration.zero
+                          : DateTime.now().difference(_recordStartedAt!),
+                      cancelArmed: _cancelArmed,
+                      recognizing: _dictating,
+                    ),
                   if (_quoting != null)
                     _QuoteBar(
                       quote: quoteFor(_quoting!),
@@ -1024,6 +1287,28 @@ class _ChatPageState extends State<ChatPage> {
                           tooltip: '发送图片、视频或文件',
                           onPressed: _busy ? null : () => _sendFiles(),
                           icon: const Icon(Icons.attach_file),
+                        ),
+                        const SizedBox(width: 4),
+                        _MicButton(
+                          key: const Key('mic_button'),
+                          enabled: !_busy && !_dictating,
+                          recording: _recordingMode != null,
+                          onTap: () => unawaited(_toggleDictation()),
+                          onHoldStart: () {
+                            if (_recordingMode != null || _busy) return;
+                            final start = _startRecording(_VoiceMode.message);
+                            _recordingStart = start;
+                          },
+                          onHoldMove: (dy) {
+                            final armed = dy < -60;
+                            if (armed != _cancelArmed &&
+                                _recordingMode == _VoiceMode.message) {
+                              setState(() => _cancelArmed = armed);
+                            }
+                          },
+                          onHoldEnd: () => unawaited(
+                            _finishVoiceMessage(send: !_cancelArmed),
+                          ),
                         ),
                         Expanded(
                           child: Shortcuts(
@@ -1272,6 +1557,8 @@ class _MessageBubble extends StatelessWidget {
     this.onDiscard,
     this.onTapQuote,
     this.highlighted = false,
+    this.onPlayVoice,
+    this.transcribing = false,
   });
 
   final ChatMessage message;
@@ -1291,6 +1578,12 @@ class _MessageBubble extends StatelessWidget {
   /// Briefly true for the original message after jumping to it.
   final bool highlighted;
 
+  /// Tap on a voice message.
+  final VoidCallback? onPlayVoice;
+
+  /// 转文字 is running for this voice message.
+  final bool transcribing;
+
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
@@ -1299,6 +1592,9 @@ class _MessageBubble extends StatelessWidget {
     final isText = message.kind == ChatMessageKind.text;
     final isPicture =
         !isText && isImageFileName(message.fileName ?? message.filePath ?? '');
+    final voiceSeconds = isText
+        ? null
+        : voiceSecondsFromName(message.fileName ?? message.filePath ?? '');
     final quoted = isText ? parseQuotedText(message.text ?? '') : null;
     final time = Text(
       _formatTime(message.sentAt),
@@ -1334,6 +1630,16 @@ class _MessageBubble extends StatelessWidget {
     if (isText) {
       content = decorated(
         ChatTextMessage(text: quoted!.reply, extraActions: textMenuActions),
+      );
+    } else if (voiceSeconds != null) {
+      content = decorated(
+        _VoiceContent(
+          messageId: message.id,
+          seconds: voiceSeconds,
+          outgoing: outgoing,
+          available:
+              message.filePath != null && File(message.filePath!).existsSync(),
+        ),
       );
     } else if (isPicture) {
       // WeChat style: only a small picture, no name/size/location.
@@ -1373,7 +1679,11 @@ class _MessageBubble extends StatelessWidget {
             children: [
               GestureDetector(
                 key: ValueKey('bubble_${message.id}'),
-                onTap: isText ? null : () => _openMessageFile(context, message),
+                onTap: isText
+                    ? null
+                    : voiceSeconds != null
+                    ? onPlayVoice
+                    : () => _openMessageFile(context, message),
                 onLongPressStart: (details) =>
                     showMenuAt(details.globalPosition),
                 onSecondaryTapUp: (details) =>
@@ -1382,6 +1692,11 @@ class _MessageBubble extends StatelessWidget {
               ),
               if (quoted?.quote != null)
                 _QuotedBlock(quote: quoted!.quote!, onTap: onTapQuote),
+              if (voiceSeconds != null &&
+                  (transcribing || message.transcript != null))
+                _TranscriptBlock(
+                  text: transcribing ? null : message.transcript,
+                ),
             ],
           ),
         ),
@@ -1622,6 +1937,215 @@ class _DaySeparator extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+enum _VoiceMode { message, dictation }
+
+/// Hold: voice message (slide up to cancel). Tap: dictation into the box.
+class _MicButton extends StatelessWidget {
+  const _MicButton({
+    required this.enabled,
+    required this.recording,
+    required this.onTap,
+    required this.onHoldStart,
+    required this.onHoldMove,
+    required this.onHoldEnd,
+    super.key,
+  });
+
+  final bool enabled;
+  final bool recording;
+  final VoidCallback onTap;
+  final VoidCallback onHoldStart;
+  final ValueChanged<double> onHoldMove;
+  final VoidCallback onHoldEnd;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Tooltip(
+      message: '按住发语音（上滑取消），点一下语音输入文字',
+      child: GestureDetector(
+        onTap: enabled ? onTap : null,
+        onLongPressStart: enabled ? (_) => onHoldStart() : null,
+        onLongPressMoveUpdate: enabled
+            ? (details) => onHoldMove(details.localOffsetFromOrigin.dy)
+            : null,
+        onLongPressEnd: enabled ? (_) => onHoldEnd() : null,
+        child: Container(
+          width: 40,
+          height: 40,
+          decoration: BoxDecoration(
+            color: recording
+                ? colors.errorContainer
+                : colors.secondaryContainer.withValues(
+                    alpha: enabled ? 1 : 0.5,
+                  ),
+            shape: BoxShape.circle,
+          ),
+          child: Icon(
+            recording ? Icons.mic_rounded : Icons.mic_none_rounded,
+            color: recording ? colors.error : colors.onSecondaryContainer,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _RecordingBar extends StatelessWidget {
+  const _RecordingBar({
+    required this.mode,
+    required this.elapsed,
+    required this.cancelArmed,
+    required this.recognizing,
+  });
+
+  final _VoiceMode? mode;
+  final Duration elapsed;
+  final bool cancelArmed;
+  final bool recognizing;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final seconds = elapsed.inSeconds;
+    final clock = '0:${seconds.toString().padLeft(2, '0')}';
+    final String label;
+    if (recognizing) {
+      label = '正在识别…';
+    } else if (mode == _VoiceMode.dictation) {
+      label = '正在听写 $clock · 再点一次麦克风结束';
+    } else if (cancelArmed) {
+      label = '松开手指，取消发送';
+    } else {
+      label = '正在录音 $clock · 松开发送，上滑取消';
+    }
+    final danger = cancelArmed && !recognizing;
+    return Container(
+      key: const Key('recording_bar'),
+      width: double.infinity,
+      color: danger
+          ? theme.colorScheme.errorContainer
+          : theme.colorScheme.surfaceContainerHigh,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: Row(
+        children: [
+          if (recognizing)
+            const SizedBox.square(
+              dimension: 14,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          else
+            Icon(
+              danger ? Icons.cancel_outlined : Icons.fiber_manual_record,
+              size: 14,
+              color: theme.colorScheme.error,
+            ),
+          const SizedBox(width: 10),
+          Expanded(child: Text(label, style: theme.textTheme.bodySmall)),
+          if (!recognizing && mode == _VoiceMode.message)
+            Text(
+              '最长 $maximumVoiceSeconds 秒',
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// ▶ 12″ — width grows with the length, like WeChat.
+class _VoiceContent extends StatelessWidget {
+  const _VoiceContent({
+    required this.messageId,
+    required this.seconds,
+    required this.outgoing,
+    required this.available,
+  });
+
+  final String messageId;
+  final int seconds;
+  final bool outgoing;
+  final bool available;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final width = (64 + seconds * 2.6)
+        .clamp(available ? 64 : 112, 210)
+        .toDouble();
+    return ValueListenableBuilder<String?>(
+      valueListenable: VoicePlayer.instance.playingId,
+      builder: (context, playing, _) {
+        final isPlaying = playing == messageId;
+        final icon = Icon(
+          isPlaying ? Icons.stop_circle_outlined : Icons.graphic_eq_rounded,
+          size: 20,
+          color: available
+              ? theme.colorScheme.primary
+              : theme.colorScheme.onSurfaceVariant,
+        );
+        final label = Text(
+          available ? '$seconds″' : '$seconds″ 已过期',
+          key: Key('voice_$messageId'),
+        );
+        return SizedBox(
+          width: width,
+          child: Row(
+            mainAxisAlignment: outgoing
+                ? MainAxisAlignment.end
+                : MainAxisAlignment.start,
+            children: outgoing
+                ? [label, const SizedBox(width: 6), icon]
+                : [icon, const SizedBox(width: 6), label],
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// The text of a voice message (转文字), under its bubble.
+class _TranscriptBlock extends StatelessWidget {
+  const _TranscriptBlock({required this.text});
+
+  /// Null while recognizing.
+  final String? text;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final value = text;
+    return Container(
+      key: const Key('transcript_block'),
+      constraints: const BoxConstraints(maxWidth: 420),
+      margin: const EdgeInsets.only(top: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerLowest,
+        border: Border.all(
+          color: theme.colorScheme.outlineVariant.withValues(alpha: 0.7),
+        ),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: value == null
+          ? Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const SizedBox.square(
+                  dimension: 12,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+                const SizedBox(width: 8),
+                Text('正在转文字…', style: theme.textTheme.bodySmall),
+              ],
+            )
+          : SelectableText(value, style: theme.textTheme.bodyMedium),
     );
   }
 }

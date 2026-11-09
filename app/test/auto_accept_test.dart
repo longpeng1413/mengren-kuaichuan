@@ -59,6 +59,12 @@ void main() {
     );
 
     final tile = find.byKey(const Key('auto_accept_mode'));
+    // Below the fold since the voice settings were added to 常规.
+    await tester.scrollUntilVisible(
+      tile,
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
     await tester.ensureVisible(tile);
     await tester.pumpAndSettle();
     expect(find.text('自动接收文件'), findsOneWidget);

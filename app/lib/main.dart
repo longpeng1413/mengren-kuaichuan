@@ -15,6 +15,8 @@ import 'src/pairing/pairing_endpoint.dart';
 import 'src/remote/remote_access_settings.dart';
 import 'src/settings/app_settings.dart';
 import 'src/update/app_update_service.dart';
+import 'src/voice/speech_service.dart';
+import 'src/voice/voice_store.dart';
 
 Future<void> main(List<String> arguments) async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -86,6 +88,21 @@ Future<void> main(List<String> arguments) async {
     } catch (error, stackTrace) {
       await diagnostics.log(
         'outgoing_cache_cleanup_failed',
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+    // Voice messages: 30 days / 500 MB and recordings a crash left behind;
+    // the speech model: stale partial downloads.
+    try {
+      final removed = await VoiceStore.instance.cleanup();
+      if (removed > 0) {
+        await diagnostics.log('voice_store_cleaned bytes=$removed');
+      }
+      await SpeechModel.instance.cleanup();
+    } catch (error, stackTrace) {
+      await diagnostics.log(
+        'voice_cleanup_failed',
         error: error,
         stackTrace: stackTrace,
       );

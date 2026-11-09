@@ -14,6 +14,17 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
+    // Real phones are ARM. Leaving out x86_64 (emulators only) keeps the
+    // offline speech engine (onnxruntime, ~30 MB per CPU type) from bloating
+    // the single APK that one-tap update downloads. (ndk.abiFilters is
+    // overridden by the Flutter plugin, so exclude at packaging time.)
+    packaging {
+        jniLibs {
+            excludes += "lib/x86_64/**"
+            excludes += "lib/x86/**"
+        }
+    }
+
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "com.personal.lantransfer.lan_transfer"
@@ -27,6 +38,7 @@ android {
         // flag during build.
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+
     }
 
     buildTypes {

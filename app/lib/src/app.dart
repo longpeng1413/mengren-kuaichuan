@@ -34,6 +34,7 @@ import 'ui/app_theme.dart';
 import 'ui/device_home_view.dart';
 import 'update/app_update_service.dart';
 import 'update/update_flow.dart';
+import 'voice/voice_store.dart';
 
 typedef SaveIdentity = Future<void> Function(DeviceIdentity identity);
 
@@ -1214,7 +1215,51 @@ class _DeviceListPageState extends State<DeviceListPage>
     unawaited(_finalizeCompletedTransfer(transfer));
   }
 
+  /// Files the app owns (pasted pictures, forwarded copies, voice
+  /// messages): deleting the message or clearing the chat removes them.
+  bool _isAppCacheFile(String filePath) =>
+      OutgoingCache.instance.contains(filePath) ||
+      VoiceStore.instance.contains(filePath);
+
+  /// Voice messages are kept in the app's voice folder (like WeChat), not
+  /// in the download folder, so they can be played and transcribed.
+  Future<void> _finalizeVoiceMessage(CompletedTransfer transfer) async {
+    final stored = await VoiceStore.instance.adoptReceived(transfer.file);
+    unawaited(_diagnostics.log('voice_received bytes=${transfer.fileSize}'));
+    if (!mounted) return;
+    _incomingProgressFor(transfer.senderId).value = null;
+    _appendChat(
+      ChatMessage(
+        id: transfer.transferId,
+        peerId: transfer.senderId,
+        peerName: transfer.senderName,
+        senderId: transfer.senderId,
+        senderName: transfer.senderName,
+        kind: ChatMessageKind.file,
+        sentAt: DateTime.now(),
+        isOutgoing: false,
+        fileName: path.basename(transfer.file.path),
+        filePath: stored.path,
+        displayLocation: '语音消息',
+        fileSize: transfer.fileSize,
+        isCache: true,
+      ),
+    );
+  }
+
+  Future<void> _setTranscript(ChatMessage message, String? text) async {
+    final current = _chatHistory[message.peerId]
+        ?.where((item) => item.id == message.id)
+        .firstOrNull;
+    if (current == null) return;
+    _updateChatMessage(current.withTranscript(text));
+  }
+
   Future<void> _finalizeCompletedTransfer(CompletedTransfer transfer) async {
+    if (isVoiceFileName(transfer.file.path)) {
+      await _finalizeVoiceMessage(transfer);
+      return;
+    }
     await _diagnostics.log('receive_finalize_start bytes=${transfer.fileSize}');
     final stored = await _receivedFileService.finalizeReceivedFile(
       transfer.file,
@@ -1655,7 +1700,7 @@ class _DeviceListPageState extends State<DeviceListPage>
           filePath: isSharedCache ? null : file.path,
           displayLocation: isSharedCache ? '系统共享缓存已自动清理' : file.path,
           fileSize: fileSize,
-          isCache: !isSharedCache && OutgoingCache.instance.contains(file.path),
+          isCache: !isSharedCache && _isAppCacheFile(file.path),
         ),
       );
       if (_sharedCachePaths.remove(file.path) && await file.exists()) {
@@ -1943,8 +1988,7 @@ class _DeviceListPageState extends State<DeviceListPage>
             filePath: isSharedCache ? null : file.path,
             displayLocation: isSharedCache ? '系统共享缓存已自动清理' : file.path,
             fileSize: fileSize,
-            isCache:
-                !isSharedCache && OutgoingCache.instance.contains(file.path),
+            isCache: !isSharedCache && _isAppCacheFile(file.path),
           ),
         );
         if (_sharedCachePaths.remove(file.path) && await file.exists()) {
@@ -2032,6 +2076,7 @@ class _DeviceListPageState extends State<DeviceListPage>
           onDiscardUndelivered: (messageId) =>
               _removeChatMessage(device.deviceId, messageId),
           onDeleteMessage: (message) => _deleteChatMessage(message),
+          onTranscribed: _setTranscript,
           onForward: _forwardMessage,
           forwardTargets: () => _devices,
           onCancelIncomingTransfer: device.isRemote

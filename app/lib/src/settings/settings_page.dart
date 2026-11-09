@@ -10,6 +10,9 @@ import '../background/background_receive.dart';
 import '../chat/chat_thumbnail.dart';
 import '../chat/clipboard_files.dart';
 import '../desktop/startup_launch.dart';
+import '../voice/speech_download_dialog.dart';
+import '../voice/speech_service.dart';
+import '../voice/voice_store.dart';
 import '../diagnostics/diagnostic_log_service.dart';
 import '../pairing/pairing_endpoint.dart';
 import '../remote/remote_access_settings.dart';
@@ -56,6 +59,9 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _checkingUpdate = false;
   int _updateCacheBytes = 0;
   int _outgoingCacheBytes = 0;
+  int _voiceBytes = 0;
+  int _speechModelBytes = 0;
+  bool _speechModelReady = false;
 
   @override
   void initState() {
@@ -65,8 +71,82 @@ class _SettingsPageState extends State<SettingsPage> {
     _removedDevices = List.of(widget.removedDevices);
     if (Platform.isAndroid || Platform.isWindows) _refreshDiagnosticInfo();
     if (AppUpdateService.isSupportedPlatform) _refreshUpdateCache();
-    if (Platform.isAndroid || Platform.isWindows) _refreshOutgoingCache();
+    if (Platform.isAndroid || Platform.isWindows) {
+      _refreshOutgoingCache();
+      _refreshVoice();
+    }
   }
+
+  Future<void> _refreshVoice() async {
+    try {
+      final voice = await VoiceStore.instance.size();
+      final model = await SpeechModel.instance.size();
+      final ready = await SpeechModel.instance.isInstalled();
+      if (!mounted) return;
+      setState(() {
+        _voiceBytes = voice;
+        _speechModelBytes = model;
+        _speechModelReady = ready;
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _clearVoice() async {
+    final confirmed = await _confirm(
+      '清空语音消息？',
+      '会删除本机保存的全部语音消息录音，聊天记录里的语音会显示“已过期”，已转出的文字保留。',
+      '清空',
+    );
+    if (confirmed != true) return;
+    try {
+      final removed = await VoiceStore.instance.clear();
+      _showMessage('已清空语音消息（${formatUpdateBytes(removed)}）');
+    } catch (error) {
+      _showError('清空语音消息失败：$error');
+    } finally {
+      await _refreshVoice();
+    }
+  }
+
+  Future<void> _manageSpeechModel() async {
+    if (_speechModelReady) {
+      final confirmed = await _confirm(
+        '删除语音识别模型？',
+        '删除后“转文字”和语音输入需要重新下载模型（约 '
+            '${formatUpdateBytes(SpeechModel.totalBytes)}）。语音消息本身不受影响。',
+        '删除',
+      );
+      if (confirmed != true) return;
+      try {
+        await SpeechModel.instance.delete();
+        _showMessage('已删除语音识别模型');
+      } catch (error) {
+        _showError('删除失败：$error');
+      }
+    } else {
+      await ensureSpeechModel(context, const PlatformSpeechEngine());
+    }
+    await _refreshVoice();
+  }
+
+  Future<bool?> _confirm(String title, String body, String action) =>
+      showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Text(title),
+          content: Text(body),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: Text(action),
+            ),
+          ],
+        ),
+      );
 
   Future<void> _refreshUpdateCache() async {
     try {
@@ -660,6 +740,34 @@ class _SettingsPageState extends State<SettingsPage> {
                         child: const Text('清空'),
                       ),
                     ),
+                  if (Platform.isAndroid || Platform.isWindows)
+                    _SettingsTile(
+                      key: const Key('voice_messages'),
+                      icon: Icons.keyboard_voice_outlined,
+                      title: '语音消息',
+                      subtitle:
+                          '${formatUpdateBytes(_voiceBytes)} · 按住输入框旁的麦克风录音；'
+                          '超过 30 天或总量超过 500 MB 的启动时自动清理',
+                      trailing: TextButton(
+                        onPressed: _voiceBytes == 0 ? null : _clearVoice,
+                        child: const Text('清空'),
+                      ),
+                    ),
+                  if (Platform.isAndroid || Platform.isWindows)
+                    _SettingsTile(
+                      key: const Key('speech_model'),
+                      icon: Icons.record_voice_over_outlined,
+                      title: '语音识别模型',
+                      subtitle: _speechModelReady
+                          ? '已下载 ${formatUpdateBytes(_speechModelBytes)} · 转文字和语音输入在本机离线完成'
+                          : '未下载 · 第一次转文字时下载（约 '
+                                '${formatUpdateBytes(SpeechModel.totalBytes)}）'
+                                '${_speechModelBytes > 0 ? '，已下载一部分 ${formatUpdateBytes(_speechModelBytes)}' : ''}',
+                      trailing: TextButton(
+                        onPressed: _manageSpeechModel,
+                        child: Text(_speechModelReady ? '删除' : '下载'),
+                      ),
+                    ),
                 ],
               ),
               _SettingsSection(
@@ -884,6 +992,16 @@ class _SettingsPageState extends State<SettingsPage> {
                         '30 天后自动清理。\n'
                         '静默启动（电脑）：打开“开机自启动”后，默认开机只在任务栏右下角托盘里运行，'
                         '不弹出窗口，照常接收；点托盘图标打开。',
+                  ),
+                  _HelpTile(
+                    icon: Icons.keyboard_voice_outlined,
+                    title: '语音消息和语音转文字',
+                    body:
+                        '按住输入框旁的麦克风说话，松开发送；手指上滑可以取消，最长 60 秒。'
+                        '点一下麦克风是语音输入：说完再点一次，说的话会变成文字填进输入框，可以修改后再发。\n'
+                        '长按语音消息选“转文字”，文字显示在语音下方。识别在本机离线完成，录音不会上传；'
+                        '第一次使用需要下载约 229 MB 的识别模型（从 GitHub 下载，国内网络可能需要代理），'
+                        '可在“设置 → 常规 → 语音识别模型”删除。旧版本猛人快传收到的语音是一个可播放的音频文件。',
                   ),
                   _HelpTile(
                     icon: Icons.route_outlined,

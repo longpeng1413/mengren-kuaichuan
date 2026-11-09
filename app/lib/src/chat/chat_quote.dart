@@ -1,5 +1,6 @@
 import 'package:path/path.dart' as path;
 
+import '../voice/voice_store.dart';
 import 'chat_message.dart';
 
 /// A quote travels inside the text itself, in the format WeChat uses when a
@@ -46,7 +47,12 @@ String quoteSnippetFor(ChatMessage message) {
     raw = parseQuotedText(message.text ?? '').reply;
   } else {
     final name = message.fileName ?? '文件';
-    raw = isImageFileName(name) ? '[图片] $name' : '[文件] $name';
+    final voiceSeconds = voiceSecondsFromName(name);
+    raw = voiceSeconds != null
+        ? '[语音] $voiceSeconds″'
+        : isImageFileName(name)
+        ? '[图片] $name'
+        : '[文件] $name';
   }
   final collapsed = raw.replaceAll(RegExp(r'\s+'), ' ').trim();
   if (collapsed.length <= _maximumSnippetLength) return collapsed;

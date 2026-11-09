@@ -835,6 +835,10 @@ class AppUpdateService {
 
   String? _loggedProxy = '';
 
+  /// The same proxy-aware HTTPS client, for other files on this project's
+  /// GitHub release pages (the speech recognition model).
+  Future<HttpClient> createDownloadClient() => _createClient();
+
   /// Dart's HttpClient ignores the system proxy on both Windows and Android,
   /// but many users in mainland China can only reach github.com through a
   /// local proxy (browsers use it, so downloads there are fast).

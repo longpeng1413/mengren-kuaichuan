@@ -43,6 +43,7 @@ class ChatMessage {
     this.isCache = false,
     this.deliveryState,
     this.deliveryNote,
+    this.transcript,
   });
 
   final String id;
@@ -65,7 +66,31 @@ class ChatMessage {
   /// Why a failed item was not sent, shown under the bubble.
   final String? deliveryNote;
 
+  /// Voice message converted to text on this device (转文字).
+  final String? transcript;
+
   bool get isQueued => deliveryState == ChatDeliveryState.queued;
+
+  ChatMessage withTranscript(String? value) => ChatMessage(
+    id: id,
+    peerId: peerId,
+    peerName: peerName,
+    senderId: senderId,
+    senderName: senderName,
+    kind: kind,
+    sentAt: sentAt,
+    isOutgoing: isOutgoing,
+    text: text,
+    fileName: fileName,
+    filePath: filePath,
+    contentUri: contentUri,
+    displayLocation: displayLocation,
+    fileSize: fileSize,
+    isCache: isCache,
+    deliveryState: deliveryState,
+    deliveryNote: deliveryNote,
+    transcript: value,
+  );
 
   ChatMessage withDelivery(ChatDeliveryState? state, {String? note}) =>
       ChatMessage(
@@ -86,6 +111,7 @@ class ChatMessage {
         isCache: isCache,
         deliveryState: state,
         deliveryNote: note,
+        transcript: transcript,
       );
 
   Map<String, Object?> toJson() => {
@@ -106,6 +132,7 @@ class ChatMessage {
     'isCache': isCache,
     if (deliveryState != null) 'deliveryState': deliveryState!.name,
     if (deliveryNote != null) 'deliveryNote': deliveryNote,
+    if (transcript != null) 'transcript': transcript,
   };
 
   static ChatMessage? tryFromJson(Object? value) {
@@ -151,6 +178,7 @@ class ChatMessage {
           .where((state) => state.name == value['deliveryState'])
           .firstOrNull,
       deliveryNote: value['deliveryNote'] as String?,
+      transcript: value['transcript'] as String?,
     );
   }
 }
