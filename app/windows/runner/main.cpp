@@ -13,8 +13,16 @@
 
 namespace {
 
-constexpr wchar_t kWindowTitle[] = L"\u731B\u4EBA\u5FEB\u4F20 v1.11.3";
+constexpr wchar_t kWindowTitle[] = L"\u731B\u4EBA\u5FEB\u4F20 v1.12.0";
 constexpr wchar_t kWindowTitlePrefix[] = L"\u731B\u4EBA\u5FEB\u4F20 v";
+// Picture window (--image-viewer): "<app name> <picture viewer>". It must
+// not start with kWindowTitlePrefix, or the single-instance check would
+// mistake it for the main window.
+constexpr wchar_t kViewerTitle[] = L"\u731B\u4EBA\u5FEB\u4F20 \u56FE\u7247\u67E5\u770B";
+constexpr char kImageViewerArgument[] = "--image-viewer";
+constexpr unsigned int kViewerWidth = 960;
+constexpr unsigned int kViewerHeight = 720;
+
 constexpr wchar_t kSingleInstanceMutex[] =
     L"Local\\MengrenLanTransfer.SingleInstance";
 
@@ -84,17 +92,29 @@ void CenterOnPrimaryMonitor(Win32Window::Point& origin,
 
 int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
                       _In_ wchar_t *command_line, _In_ int show_command) {
+  std::vector<std::string> command_line_arguments =
+      GetCommandLineArguments();
+  // The chat process starts a second copy of itself as the picture window
+  // (like WeChat for PC). That copy skips the single-instance check, the
+  // tray and the network; Dart sees the same argument.
+  const bool image_viewer =
+      std::find(command_line_arguments.begin(), command_line_arguments.end(),
+                kImageViewerArgument) != command_line_arguments.end();
+
   // Closing the Flutter window hides it in the tray. Clicking a desktop
   // shortcut again must restore that process instead of starting another
   // receiver which would compete for TCP port 53318. Looking for older titles
   // also makes an accidental launch during an upgrade harmless.
-  if (HWND existing = FindExistingMengrenWindow(); existing != nullptr) {
-    RestoreExistingWindow(existing);
-    return EXIT_SUCCESS;
+  if (!image_viewer) {
+    if (HWND existing = FindExistingMengrenWindow(); existing != nullptr) {
+      RestoreExistingWindow(existing);
+      return EXIT_SUCCESS;
+    }
   }
 
   HANDLE single_instance =
-      ::CreateMutexW(nullptr, FALSE, kSingleInstanceMutex);
+      image_viewer ? nullptr
+                   : ::CreateMutexW(nullptr, FALSE, kSingleInstanceMutex);
   if (single_instance != nullptr && ::GetLastError() == ERROR_ALREADY_EXISTS) {
     RestoreExistingWindow(FindExistingMengrenWindow());
     ::CloseHandle(single_instance);
@@ -113,8 +133,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
 
   flutter::DartProject project(L"data");
 
-  std::vector<std::string> command_line_arguments =
-      GetCommandLineArguments();
   // The login entry adds --silent when silent start is on: tray only.
   const bool start_hidden =
       std::find(command_line_arguments.begin(), command_line_arguments.end(),
@@ -123,16 +141,21 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   project.set_dart_entrypoint_arguments(std::move(command_line_arguments));
 
   FlutterWindow window(project);
-  window.set_start_hidden(start_hidden);
+  window.set_start_hidden(start_hidden && !image_viewer);
+  // The picture window has its own default size and must not overwrite the
+  // chat window's remembered size.
+  window.set_remember_size(!image_viewer);
   Win32Window::Point origin(10, 10);
-  Win32Window::Size size(kWindowWidth, kWindowHeight);
+  Win32Window::Size size(image_viewer ? kViewerWidth : kWindowWidth,
+                         image_viewer ? kViewerHeight : kWindowHeight);
   unsigned int saved_width = 0;
   unsigned int saved_height = 0;
-  if (window_size_store::Load(saved_width, saved_height)) {
+  if (!image_viewer && window_size_store::Load(saved_width, saved_height)) {
     size = Win32Window::Size(saved_width, saved_height);
   }
   CenterOnPrimaryMonitor(origin, size);
-  if (!window.Create(kWindowTitle, origin, size)) {
+  if (!window.Create(image_viewer ? kViewerTitle : kWindowTitle, origin,
+                     size)) {
     if (single_instance != nullptr) {
       ::CloseHandle(single_instance);
     }

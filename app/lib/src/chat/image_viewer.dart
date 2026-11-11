@@ -16,6 +16,21 @@ bool canViewPicture(ChatMessage message) {
   return Platform.isAndroid && message.contentUri != null;
 }
 
+/// The picture's bytes for the editor: the local file, or (Android, saved
+/// to a chosen folder) a large preview of the content URI.
+Future<Uint8List> loadPictureBytes(ChatMessage message) async {
+  final filePath = message.filePath;
+  if (filePath != null && File(filePath).existsSync()) {
+    return File(filePath).readAsBytes();
+  }
+  final uri = message.contentUri;
+  if (uri != null && Platform.isAndroid) {
+    final bytes = await ContentUriThumbnails.instance.loadLarge(uri);
+    if (bytes != null) return bytes;
+  }
+  throw const FileSystemException('图片已被移动或删除');
+}
+
 /// WeChat-style picture viewer inside the app: one at a time (it is a full
 /// screen page, so a second tap cannot open another), zoom with the mouse
 /// wheel / pinch / double tap, and browse the conversation's other pictures
@@ -27,8 +42,10 @@ class ChatImageViewer extends StatefulWidget {
     required this.initialIndex,
     this.onOpenExternal,
     this.onReveal,
+    this.onEdit,
+    bool? closeOnTap,
     super.key,
-  });
+  }) : closeOnTap = closeOnTap ?? false;
 
   final List<ChatMessage> images;
   final int initialIndex;
@@ -38,6 +55,13 @@ class ChatImageViewer extends StatefulWidget {
 
   /// 在文件夹中显示 (Windows).
   final ImageViewerAction? onReveal;
+
+  /// 编辑 (opens the picture editor).
+  final ImageViewerAction? onEdit;
+
+  /// Phone WeChat style: tap the picture once to open it, tap again to
+  /// close (double tap still zooms).
+  final bool closeOnTap;
 
   @override
   State<ChatImageViewer> createState() => _ChatImageViewerState();
@@ -101,6 +125,9 @@ class _ChatImageViewerState extends State<ChatImageViewer> {
                 itemBuilder: (context, index) => _ZoomablePicture(
                   key: ValueKey('viewer_${widget.images[index].id}'),
                   message: widget.images[index],
+                  onTap: widget.closeOnTap
+                      ? () => Navigator.of(context).maybePop()
+                      : null,
                   onZoomChanged: (zoomed) {
                     if (index == _index && zoomed != _zoomed) {
                       setState(() => _zoomed = zoomed);
@@ -134,12 +161,19 @@ class _ChatImageViewerState extends State<ChatImageViewer> {
                           style: const TextStyle(color: white),
                         ),
                       ),
+                      if (widget.onEdit != null)
+                        IconButton(
+                          key: const Key('viewer_edit'),
+                          tooltip: '编辑',
+                          color: white,
+                          onPressed: () => unawaited(widget.onEdit!(current)),
+                          icon: const Icon(Icons.edit_outlined),
+                        ),
                       if (widget.onReveal != null && current.filePath != null)
                         IconButton(
                           tooltip: '在文件夹中显示',
                           color: white,
-                          onPressed: () =>
-                              unawaited(widget.onReveal!(current)),
+                          onPressed: () => unawaited(widget.onReveal!(current)),
                           icon: const Icon(Icons.folder_open_outlined),
                         ),
                       if (widget.onOpenExternal != null)
@@ -190,11 +224,13 @@ class _ZoomablePicture extends StatefulWidget {
   const _ZoomablePicture({
     required this.message,
     required this.onZoomChanged,
+    this.onTap,
     super.key,
   });
 
   final ChatMessage message;
   final ValueChanged<bool> onZoomChanged;
+  final VoidCallback? onTap;
 
   @override
   State<_ZoomablePicture> createState() => _ZoomablePictureState();
@@ -281,6 +317,7 @@ class _ZoomablePictureState extends State<_ZoomablePicture> {
       return const Center(child: CircularProgressIndicator());
     }
     return GestureDetector(
+      onTap: widget.onTap,
       onDoubleTapDown: (details) => _doubleTapAt = details.localPosition,
       onDoubleTap: _toggleZoom,
       child: InteractiveViewer(

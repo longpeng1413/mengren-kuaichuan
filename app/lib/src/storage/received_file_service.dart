@@ -115,6 +115,26 @@ class ReceivedFileService {
     }
   }
 
+  /// Android: saves a copy of [source] to 下载/猛人快传 (the source is kept;
+  /// the caller cleans it up). Returns where it was saved.
+  Future<String> saveCopyToDownloads(File source, {String? fileName}) async {
+    final result = await _channel.invokeMapMethod<String, dynamic>(
+      'exportFile',
+      {
+        'sourcePath': source.path,
+        'fileName': fileName ?? path.basename(source.path),
+        'mimeType': _mimeTypeFor(source.path),
+        'treeUri': null,
+        'locationLabel': null,
+      },
+    );
+    final location = result?['location'];
+    if (location is! String) {
+      throw const FileSystemException('系统没有返回保存结果');
+    }
+    return location;
+  }
+
   Future<void> openFile({String? filePath, String? contentUri}) async {
     if (Platform.isAndroid && contentUri != null) {
       await _channel.invokeMethod<void>('openUri', {'uri': contentUri});

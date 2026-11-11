@@ -2,12 +2,17 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:desktop_drop/desktop_drop.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path/path.dart' as path;
 
+import '../diagnostics/diagnostic_log_service.dart';
 import '../discovery/discovered_device.dart';
+import '../image_edit/image_editor_page.dart';
+import '../image_view/desktop_viewer_host.dart';
+import '../image_view/viewer_protocol.dart';
 import '../storage/received_file_service.dart';
 import '../transfer/transfer_client.dart' show TransferException;
 import '../transfer/transfer_models.dart';
@@ -86,8 +91,7 @@ class ChatPage extends StatefulWidget {
   final ClipboardFileSource? clipboard;
 
   /// Saves the text of a voice message (转文字), or null to hide it.
-  final Future<void> Function(ChatMessage message, String? text)?
-  onTranscribed;
+  final Future<void> Function(ChatMessage message, String? text)? onTranscribed;
 
   /// Microphone and offline speech recognition; tests pass fakes.
   final VoiceRecorder? voiceRecorder;
@@ -128,6 +132,8 @@ class _ChatPageState extends State<ChatPage> {
 
   /// Only one picture viewer at a time, even after a fast double tap.
   bool _viewerOpen = false;
+  Route<void>? _viewerRoute;
+  bool _editorOpen = false;
 
   ClipboardFileSource get _clipboard =>
       widget.clipboard ?? PlatformClipboardFiles.instance;
@@ -608,6 +614,15 @@ class _ChatPageState extends State<ChatPage> {
         () => _startQuote(message),
         icon: Icons.format_quote_rounded,
       ),
+      if (!isText &&
+          !isVoice &&
+          isImageFileName(message.fileName ?? filePath ?? '') &&
+          canViewPicture(message))
+        ChatMessageAction(
+          '编辑',
+          () => unawaited(_openPicture(message, edit: true)),
+          icon: Icons.edit_outlined,
+        ),
       if (!isText && localFile && Platform.isWindows)
         ChatMessageAction(
           '在文件夹中显示',
@@ -815,10 +830,12 @@ class _ChatPageState extends State<ChatPage> {
     } catch (_) {}
   }
 
-  /// Opens the in-app viewer on [message] with the conversation's other
-  /// pictures to browse. A missing file falls back to the usual notice.
-  Future<void> _openPicture(ChatMessage message) async {
-    if (_viewerOpen) return;
+  /// Opens [message] with the conversation's other pictures to browse.
+  /// Windows: the separate 图片查看 window (one window, reused — like WeChat
+  /// for PC). Android: the in-app viewer, closed by tapping the picture.
+  /// [edit] goes straight to the editor. A missing file falls back to the
+  /// usual notice.
+  Future<void> _openPicture(ChatMessage message, {bool edit = false}) async {
     final pictures = [
       for (final item in widget.messages.value)
         if (item.kind == ChatMessageKind.file &&
@@ -831,27 +848,143 @@ class _ChatPageState extends State<ChatPage> {
       await _openMessageFile(context, message);
       return;
     }
+    if (DesktopImageViewerHost.isAvailable &&
+        await _showInViewerWindow(pictures, index, edit)) {
+      return;
+    }
+    if (!mounted) return;
+    if (edit) {
+      await _editPicture(message);
+      return;
+    }
+    if (_viewerOpen) return;
     _viewerOpen = true;
+    final route = PageRouteBuilder<void>(
+      pageBuilder: (context, _, _) => ChatImageViewer(
+        images: pictures,
+        initialIndex: index,
+        closeOnTap: Platform.isAndroid,
+        onOpenExternal: (item) => _openMessageFile(context, item),
+        onReveal: Platform.isWindows
+            ? (item) => _revealInFolder(item.filePath!)
+            : null,
+        onEdit: _editPicture,
+      ),
+      transitionsBuilder: (_, animation, _, child) =>
+          FadeTransition(opacity: animation, child: child),
+      transitionDuration: const Duration(milliseconds: 150),
+      reverseTransitionDuration: const Duration(milliseconds: 120),
+    );
+    _viewerRoute = route;
     try {
-      await Navigator.of(context).push<void>(
-        PageRouteBuilder<void>(
-          pageBuilder: (context, _, _) => ChatImageViewer(
-            images: pictures,
-            initialIndex: index,
-            onOpenExternal: (item) => _openMessageFile(context, item),
-            onReveal: Platform.isWindows
-                ? (item) => _revealInFolder(item.filePath!)
+      await Navigator.of(context).push<void>(route);
+    } finally {
+      _viewerOpen = false;
+      _viewerRoute = null;
+    }
+  }
+
+  /// Hands the pictures to the 图片查看 window; false when it could not be
+  /// started (then the in-app viewer is used).
+  Future<bool> _showInViewerWindow(
+    List<ChatMessage> pictures,
+    int index,
+    bool edit,
+  ) async {
+    try {
+      await DesktopImageViewerHost.instance.show(
+        ViewerShowCommand(
+          images: [
+            for (final item in pictures)
+              ViewerImage(
+                id: item.id,
+                path: item.filePath!,
+                name: item.fileName ?? path.basename(item.filePath!),
+                sentAt: item.sentAt,
+              ),
+          ],
+          index: index,
+          peerId: widget.device.deviceId,
+          peerName: widget.device.displayName,
+          edit: edit,
+        ),
+      );
+      return true;
+    } catch (error, stackTrace) {
+      await DiagnosticLogService.instance.log(
+        'image_viewer_window_failed',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      return false;
+    }
+  }
+
+  /// Picture editor (mirror, crop, draw, text, mosaic). The original is
+  /// never changed: 发送 sends the edited copy in this conversation, 复制
+  /// puts it on the clipboard, 保存 keeps a copy (phone: 下载/猛人快传).
+  Future<void> _editPicture(ChatMessage message) async {
+    if (_editorOpen) return;
+    final stem = path.basenameWithoutExtension(
+      message.fileName ?? message.filePath ?? '图片',
+    );
+    final editedName = '${stem}_编辑.png';
+    Future<File> writeEdited(List<int> png) async {
+      final file = await OutgoingCache.instance.createFile(editedName);
+      await file.writeAsBytes(png, flush: true);
+      return file;
+    }
+
+    String? sendPath;
+    _editorOpen = true;
+    try {
+      await Navigator.of(context).push<bool>(
+        MaterialPageRoute(
+          builder: (_) => ImageEditorPage(
+            loadPicture: () => loadPictureBytes(message),
+            onSend: (png) async {
+              sendPath = (await writeEdited(png)).path;
+              return null;
+            },
+            onCopy: _clipboard.canCopyFiles
+                ? (png) async {
+                    final file = await writeEdited(png);
+                    await _clipboard.copyFiles([file.path]);
+                    return Platform.isAndroid
+                        ? '编辑后的图片已复制，可以到微信里粘贴'
+                        : '编辑后的图片已复制';
+                  }
                 : null,
+            onSave: (png) async {
+              final file = await writeEdited(png);
+              if (Platform.isAndroid) {
+                final location = await ReceivedFileService()
+                    .saveCopyToDownloads(file, fileName: editedName);
+                return '已保存到 $location';
+              }
+              final target = await FilePicker.platform.saveFile(
+                dialogTitle: '保存编辑后的图片',
+                fileName: editedName,
+                lockParentWindow: true,
+              );
+              if (target == null) return null;
+              await file.copy(target);
+              return '已保存到 $target';
+            },
           ),
-          transitionsBuilder: (_, animation, _, child) =>
-              FadeTransition(opacity: animation, child: child),
-          transitionDuration: const Duration(milliseconds: 150),
-          reverseTransitionDuration: const Duration(milliseconds: 120),
         ),
       );
     } finally {
-      _viewerOpen = false;
+      _editorOpen = false;
     }
+    final toSend = sendPath;
+    if (toSend == null || !mounted) return;
+    // Back to the conversation (close the viewer too), then send.
+    final viewer = _viewerRoute;
+    if (viewer != null && viewer.isActive) {
+      Navigator.of(context).removeRoute(viewer);
+    }
+    await _sendFiles([toSend]);
   }
 
   Future<void> _toggleVoicePlayback(ChatMessage message) async {
@@ -916,9 +1049,7 @@ class _ChatPageState extends State<ChatPage> {
       final picture = isImageFileName(message.fileName ?? filePath ?? '');
       _showNotice(
         Platform.isAndroid
-            ? (picture
-                  ? '图片已复制，可以到微信等应用里长按输入框粘贴'
-                  : '文件已复制，可以到支持粘贴文件的应用里粘贴')
+            ? (picture ? '图片已复制，可以到微信等应用里长按输入框粘贴' : '文件已复制，可以到支持粘贴文件的应用里粘贴')
             : picture
             ? '图片已复制，可以粘贴到微信、QQ、画图或文件夹里'
             : '文件已复制，可以粘贴到文件夹或微信里',
@@ -1266,8 +1397,8 @@ class _ChatPageState extends State<ChatPage> {
                                 ? parseQuotedText(message.text ?? '').quote
                                 : null;
                             final bubble = _MessageBubble(
-                                message: message,
-                                highlighted: message.id == _highlightedId,
+                              message: message,
+                              highlighted: message.id == _highlightedId,
                               transcribing: _transcribingIds.contains(
                                 message.id,
                               ),
@@ -1275,23 +1406,23 @@ class _ChatPageState extends State<ChatPage> {
                                   unawaited(_toggleVoicePlayback(message)),
                               onOpenPicture: () =>
                                   unawaited(_openPicture(message)),
-                                onTapQuote: quote == null
-                                    ? null
-                                    : () => unawaited(
-                                        _jumpToQuoted(messages, index, quote),
-                                      ),
-                                actions: _actionsFor(message),
-                                textMenuActions: _actionsFor(
-                                  message,
-                                  inTextMenu: true,
-                                ),
-                                onDiscard:
-                                    message.deliveryState == null ||
-                                        widget.onDiscardUndelivered == null
-                                    ? null
-                                    : () => widget.onDiscardUndelivered!(
-                                        message.id,
-                                      ),
+                              onTapQuote: quote == null
+                                  ? null
+                                  : () => unawaited(
+                                      _jumpToQuoted(messages, index, quote),
+                                    ),
+                              actions: _actionsFor(message),
+                              textMenuActions: _actionsFor(
+                                message,
+                                inTextMenu: true,
+                              ),
+                              onDiscard:
+                                  message.deliveryState == null ||
+                                      widget.onDiscardUndelivered == null
+                                  ? null
+                                  : () => widget.onDiscardUndelivered!(
+                                      message.id,
+                                    ),
                             );
                             // WeChat-style: one date bar above the first
                             // message of each day.

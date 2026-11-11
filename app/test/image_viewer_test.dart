@@ -7,6 +7,7 @@ import 'package:lan_transfer/src/chat/chat_message.dart';
 import 'package:lan_transfer/src/chat/chat_page.dart';
 import 'package:lan_transfer/src/chat/image_viewer.dart';
 import 'package:lan_transfer/src/discovery/discovered_device.dart';
+import 'package:lan_transfer/src/image_edit/image_editor_page.dart';
 import 'package:lan_transfer/src/settings/app_settings.dart';
 import 'package:lan_transfer/src/settings/settings_page.dart';
 import 'package:lan_transfer/src/transfer/transfer_models.dart';
@@ -83,7 +84,10 @@ void main() {
 
     // Two quick taps before the viewer appears.
     await tester.tap(find.byKey(const ValueKey('bubble_a')));
-    await tester.tap(find.byKey(const ValueKey('bubble_a')), warnIfMissed: false);
+    await tester.tap(
+      find.byKey(const ValueKey('bubble_a')),
+      warnIfMissed: false,
+    );
     await settle(tester);
     expect(find.byType(ChatImageViewer), findsOneWidget);
     expect(find.byKey(const Key('viewer_counter')), findsOneWidget);
@@ -151,5 +155,46 @@ void main() {
       tester.getTopLeft(find.byKey(const Key('about_header'))).dy,
       lessThan(tester.getTopLeft(find.text('外观')).dy),
     );
+  });
+
+  testWidgets('图片消息的菜单有「编辑」，点了打开编辑器；普通文件没有', (tester) async {
+    final other = File(p.join(directory.path, 'report.zip'))
+      ..writeAsBytesSync([0]);
+    messages.value = [
+      picture('a', 'a.png'),
+      ChatMessage(
+        id: 'zip',
+        peerId: 'phone',
+        peerName: '手机',
+        senderId: 'phone',
+        senderName: '华为手机',
+        kind: ChatMessageKind.file,
+        sentAt: DateTime.now(),
+        isOutgoing: false,
+        fileName: 'report.zip',
+        filePath: other.path,
+      ),
+    ];
+    await showChat(tester);
+
+    await tester.longPress(find.byKey(const ValueKey('bubble_zip')));
+    await tester.pumpAndSettle();
+    expect(find.text('编辑'), findsNothing);
+    await tester.tapAt(const Offset(5, 5));
+    await tester.pumpAndSettle();
+
+    await tester.longPress(find.byKey(const ValueKey('bubble_a')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('编辑'));
+    await settle(tester);
+    expect(find.byType(ImageEditorPage), findsOneWidget);
+    // Let the editor finish reading the file so the temp folder can go.
+    // (open, read and close each finish on the real event loop).
+    for (var i = 0; i < 10; i++) {
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 30)),
+      );
+      await tester.pump();
+    }
   });
 }

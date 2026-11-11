@@ -26,6 +26,7 @@ import 'remote/remote_access_settings.dart';
 import 'settings/app_settings.dart';
 import 'settings/settings_page.dart';
 import 'settings/trusted_devices.dart';
+import 'image_view/desktop_viewer_host.dart';
 import 'storage/received_file_service.dart';
 import 'transfer/transfer_client.dart';
 import 'transfer/transfer_models.dart';
@@ -213,6 +214,9 @@ class _DeviceListPageState extends State<DeviceListPage>
       pairingCode: widget.pairingCode,
     );
     _transferServer = TransferServer(pairingRelay: _pairingRelay);
+    if (Platform.isWindows) {
+      DesktopImageViewerHost.instance.onSend = _sendFromViewer;
+    }
     _devicesSubscription = _discovery.devices.listen((devices) {
       if (!mounted) return;
       if (_localDevices.length != devices.length) {
@@ -2147,6 +2151,18 @@ class _DeviceListPageState extends State<DeviceListPage>
     Navigator.of(context).popUntil((route) => route.isFirst);
     unawaited(_openChat(target, forwardFiles: [filePath]));
     return null;
+  }
+
+  /// 图片查看 window → 发送: the edited picture goes into that conversation
+  /// the same way as a forward (progress, offline queue and errors as usual).
+  Future<void> _sendFromViewer(String peerId, String filePath) async {
+    final target = _devices
+        .where((device) => device.deviceId == peerId)
+        .firstOrNull;
+    await _diagnostics.log('image_viewer_send found=${target != null}');
+    if (target == null || !mounted) return;
+    Navigator.of(context).popUntil((route) => route.isFirst);
+    unawaited(_openChat(target, forwardFiles: [filePath]));
   }
 
   /// A readable local copy of a file message. Android files saved through

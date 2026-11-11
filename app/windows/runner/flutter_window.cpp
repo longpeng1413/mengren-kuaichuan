@@ -224,7 +224,9 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
   // Remember the size after the user finishes resizing and when the app
   // quits. Observed before plugins, which may consume these messages.
   if (message == WM_EXITSIZEMOVE || message == WM_DESTROY) {
-    window_size_store::Save(hwnd);
+    if (remember_size_) {
+      window_size_store::Save(hwnd);
+    }
   }
 
   // Give Flutter, including plugins, an opportunity to handle window messages.

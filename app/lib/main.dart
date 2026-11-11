@@ -11,6 +11,8 @@ import 'src/device/device_identity.dart';
 import 'src/desktop/desktop_tray_service.dart';
 import 'src/desktop/startup_launch.dart';
 import 'src/diagnostics/diagnostic_log_service.dart';
+import 'src/image_view/desktop_viewer_app.dart';
+import 'src/image_view/viewer_protocol.dart';
 import 'src/pairing/pairing_endpoint.dart';
 import 'src/remote/remote_access_settings.dart';
 import 'src/settings/app_settings.dart';
@@ -19,6 +21,12 @@ import 'src/voice/speech_service.dart';
 import 'src/voice/voice_store.dart';
 
 Future<void> main(List<String> arguments) async {
+  // Windows picture window (started by the chat window, like WeChat for
+  // PC): no network, tray, logs or settings — only the viewer.
+  if (Platform.isWindows && isImageViewerLaunch(arguments)) {
+    await runImageViewerProcess();
+    return;
+  }
   WidgetsFlutterBinding.ensureInitialized();
   // Full-resolution phone photos can otherwise occupy tens of megabytes each
   // in Flutter's decoded image cache. Chat thumbnails do not need that budget.

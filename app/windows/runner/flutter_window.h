@@ -21,6 +21,9 @@ class FlutterWindow : public Win32Window {
   // the first frame; the tray icon opens it later.
   void set_start_hidden(bool hidden) { start_hidden_ = hidden; }
 
+  // False for the picture window: its size is not remembered.
+  void set_remember_size(bool remember) { remember_size_ = remember; }
+
  protected:
   // Win32Window:
   bool OnCreate() override;
@@ -40,6 +43,7 @@ class FlutterWindow : public Win32Window {
       platform_channel_;
 
   bool start_hidden_ = false;
+  bool remember_size_ = true;
 };
 
 #endif  // RUNNER_FLUTTER_WINDOW_H_
