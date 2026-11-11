@@ -52,6 +52,21 @@ class ContentUriThumbnails {
     });
   }
 
+  /// A large version for the in-app picture viewer; not cached (only the
+  /// small thumbnails are kept in memory).
+  Future<Uint8List?> loadLarge(String uri) async {
+    try {
+      return await _channel.invokeMethod<Uint8List>('loadThumbnail', {
+        'uri': uri,
+        'size': 2560,
+      });
+    } on PlatformException {
+      return null;
+    } on MissingPluginException {
+      return null;
+    }
+  }
+
   void clear() => _cache.clear();
 }
 

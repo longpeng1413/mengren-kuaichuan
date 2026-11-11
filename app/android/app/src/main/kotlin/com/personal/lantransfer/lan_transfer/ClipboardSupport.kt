@@ -126,7 +126,7 @@ class ClipboardSupport(
         }
         thumbnailExecutor.execute {
             val bytes = try {
-                decodeThumbnail(Uri.parse(uriValue), size.coerceIn(64, 1024))?.let { bitmap ->
+                decodeThumbnail(Uri.parse(uriValue), size.coerceIn(64, 2560))?.let { bitmap ->
                     ByteArrayOutputStream().use { output ->
                         val format = if (bitmap.hasAlpha()) Bitmap.CompressFormat.PNG else Bitmap.CompressFormat.JPEG
                         bitmap.compress(format, 85, output)

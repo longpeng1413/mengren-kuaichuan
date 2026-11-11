@@ -644,6 +644,49 @@ class _SettingsPageState extends State<SettingsPage> {
           child: ListView(
             padding: const EdgeInsets.fromLTRB(16, 4, 16, 28),
             children: [
+              // Version, author and project page first (user request).
+              Center(
+                key: const Key('about_header'),
+                child: Column(
+                  children: [
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: Image.asset(
+                        'assets/icon/mengren_icon_small.png',
+                        width: 44,
+                        height: 44,
+                        cacheWidth: 144,
+                        errorBuilder: (_, _, _) => const SizedBox.shrink(),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(appVersionLabel, style: theme.textTheme.bodyMedium),
+                    const SizedBox(height: 2),
+                    Text(
+                      '作者 $appAuthor',
+                      key: const Key('about_author'),
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                    TextButton.icon(
+                      key: const Key('about_github'),
+                      style: TextButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                      ),
+                      onPressed: () => unawaited(
+                        launchUrl(
+                          Uri.parse(_projectUrl),
+                          mode: LaunchMode.externalApplication,
+                        ),
+                      ),
+                      icon: const Icon(Icons.open_in_new, size: 16),
+                      label: const Text('github.com/$officialUpdateRepository'),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 14),
               _SettingsSection(
                 title: '外观',
                 children: [
@@ -1036,47 +1079,6 @@ class _SettingsPageState extends State<SettingsPage> {
                         '提示“文件已全部发出”时，对方多半已经收到，请先在对方那边确认再决定是否重发。',
                   ),
                 ],
-              ),
-              const SizedBox(height: 22),
-              Center(
-                child: Column(
-                  children: [
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(12),
-                      child: Image.asset(
-                        'assets/icon/mengren_icon_small.png',
-                        width: 44,
-                        height: 44,
-                        cacheWidth: 144,
-                        errorBuilder: (_, _, _) => const SizedBox.shrink(),
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(appVersionLabel, style: theme.textTheme.bodyMedium),
-                    const SizedBox(height: 2),
-                    Text(
-                      '作者 $appAuthor',
-                      key: const Key('about_author'),
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: theme.colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                    TextButton.icon(
-                      key: const Key('about_github'),
-                      style: TextButton.styleFrom(
-                        visualDensity: VisualDensity.compact,
-                      ),
-                      onPressed: () => unawaited(
-                        launchUrl(
-                          Uri.parse(_projectUrl),
-                          mode: LaunchMode.externalApplication,
-                        ),
-                      ),
-                      icon: const Icon(Icons.open_in_new, size: 16),
-                      label: const Text('github.com/$officialUpdateRepository'),
-                    ),
-                  ],
-                ),
               ),
             ],
           ),

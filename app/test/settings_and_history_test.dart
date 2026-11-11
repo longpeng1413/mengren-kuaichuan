@@ -264,10 +264,14 @@ void main() {
     expect(find.textContaining('家庭口令校验码'), findsOneWidget);
     expect(find.text('查看完整部署指南'), findsOneWidget);
 
-    // The footer credits the author and links to the project page.
+    expect(find.text('大文件请使用 5 GHz 热点'), findsOneWidget);
+    expect(find.text('连接注意事项'), findsOneWidget);
+
+    // The author and project page sit at the very top (moved there by user
+    // request), so scroll back up to them.
     await tester.scrollUntilVisible(
       find.byKey(const Key('about_github')),
-      300,
+      -300,
       scrollable: find.byType(Scrollable),
     );
     expect(find.text('作者 longpeng1413'), findsOneWidget);
@@ -276,7 +280,5 @@ void main() {
       findsOneWidget,
     );
     expect(find.text('默认纯局域网传输，不经过公网服务器'), findsNothing);
-    expect(find.text('大文件请使用 5 GHz 热点'), findsOneWidget);
-    expect(find.text('连接注意事项'), findsOneWidget);
   });
 }

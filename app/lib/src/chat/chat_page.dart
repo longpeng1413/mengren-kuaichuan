@@ -16,6 +16,7 @@ import 'chat_dates.dart';
 import 'chat_quote.dart';
 import 'chat_text_message.dart';
 import 'chat_thumbnail.dart';
+import 'image_viewer.dart';
 import 'clipboard_files.dart';
 import '../voice/speech_download_dialog.dart';
 import '../voice/speech_service.dart';
@@ -124,6 +125,9 @@ class _ChatPageState extends State<ChatPage> {
   /// The original message briefly highlighted after jumping to it.
   String? _highlightedId;
   Timer? _highlightTimer;
+
+  /// Only one picture viewer at a time, even after a fast double tap.
+  bool _viewerOpen = false;
 
   ClipboardFileSource get _clipboard =>
       widget.clipboard ?? PlatformClipboardFiles.instance;
@@ -811,6 +815,45 @@ class _ChatPageState extends State<ChatPage> {
     } catch (_) {}
   }
 
+  /// Opens the in-app viewer on [message] with the conversation's other
+  /// pictures to browse. A missing file falls back to the usual notice.
+  Future<void> _openPicture(ChatMessage message) async {
+    if (_viewerOpen) return;
+    final pictures = [
+      for (final item in widget.messages.value)
+        if (item.kind == ChatMessageKind.file &&
+            isImageFileName(item.fileName ?? item.filePath ?? '') &&
+            canViewPicture(item))
+          item,
+    ];
+    final index = pictures.indexWhere((item) => item.id == message.id);
+    if (index < 0) {
+      await _openMessageFile(context, message);
+      return;
+    }
+    _viewerOpen = true;
+    try {
+      await Navigator.of(context).push<void>(
+        PageRouteBuilder<void>(
+          pageBuilder: (context, _, _) => ChatImageViewer(
+            images: pictures,
+            initialIndex: index,
+            onOpenExternal: (item) => _openMessageFile(context, item),
+            onReveal: Platform.isWindows
+                ? (item) => _revealInFolder(item.filePath!)
+                : null,
+          ),
+          transitionsBuilder: (_, animation, _, child) =>
+              FadeTransition(opacity: animation, child: child),
+          transitionDuration: const Duration(milliseconds: 150),
+          reverseTransitionDuration: const Duration(milliseconds: 120),
+        ),
+      );
+    } finally {
+      _viewerOpen = false;
+    }
+  }
+
   Future<void> _toggleVoicePlayback(ChatMessage message) async {
     final filePath = message.filePath;
     if (filePath == null || !File(filePath).existsSync()) {
@@ -1230,6 +1273,8 @@ class _ChatPageState extends State<ChatPage> {
                               ),
                               onPlayVoice: () =>
                                   unawaited(_toggleVoicePlayback(message)),
+                              onOpenPicture: () =>
+                                  unawaited(_openPicture(message)),
                                 onTapQuote: quote == null
                                     ? null
                                     : () => unawaited(
@@ -1572,6 +1617,7 @@ class _MessageBubble extends StatelessWidget {
     this.onTapQuote,
     this.highlighted = false,
     this.onPlayVoice,
+    this.onOpenPicture,
     this.transcribing = false,
   });
 
@@ -1594,6 +1640,9 @@ class _MessageBubble extends StatelessWidget {
 
   /// Tap on a voice message.
   final VoidCallback? onPlayVoice;
+
+  /// Tap on a picture: the in-app viewer.
+  final VoidCallback? onOpenPicture;
 
   /// 转文字 is running for this voice message.
   final bool transcribing;
@@ -1697,6 +1746,8 @@ class _MessageBubble extends StatelessWidget {
                     ? null
                     : voiceSeconds != null
                     ? onPlayVoice
+                    : isPicture && onOpenPicture != null
+                    ? onOpenPicture
                     : () => _openMessageFile(context, message),
                 onLongPressStart: (details) =>
                     showMenuAt(details.globalPosition),
