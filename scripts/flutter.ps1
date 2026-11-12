@@ -1,9 +1,17 @@
-param(
+﻿param(
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$FlutterArguments
 )
 
 $ErrorActionPreference = 'Stop'
+
+# 每天第一次运行时做一次定量缓存清理（规则见 scripts\clean_dev_cache.ps1），失败不影响编译。
+try {
+    & (Join-Path $PSScriptRoot 'clean_dev_cache.ps1') -Mode Routine -IfDue
+} catch {
+    Write-Warning "缓存清理失败（不影响本次运行）：$_"
+}
+
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $mappedDrive = $false
 if ($projectRoot -match '[^\x00-\x7F]') {

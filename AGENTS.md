@@ -103,4 +103,23 @@
 - 对应版本交接文档（当前 `docs/开发交接说明-v1.11.0.md`）
 - 安装测试说明和最终安装包文件名
 
+发布完成后最后一步：`.\scripts\clean_dev_cache.ps1 -Mode AfterRelease`（见下方「开发缓存清理规则」）。
+
 完成工作后记录：问题原因、修改文件、验证结果、未实机验证部分和新安装包 SHA-256。
+
+## 开发缓存清理规则（2026-11-12 起）
+
+开发文件夹曾涨到约 19 GB（编译产物和 Gradle 加工缓存各约 3 GB，会随每次编译累积）。清理统一用 `scripts/clean_dev_cache.ps1`，不要手动 `Remove-Item -Recurse` 这些目录：`app\windows\flutter\ephemeral` 里有指向依赖包缓存的符号链接，Windows PowerShell 5.1 递归删除会顺着链接把 `.tools\pub-cache` 里的真实文件删掉；脚本只删链接本身。
+
+```powershell
+.\scripts\clean_dev_cache.ps1 -Mode Report          # 只看占用，不删
+.\scripts\clean_dev_cache.ps1                        # 定量清理（随时可跑）
+.\scripts\clean_dev_cache.ps1 -Mode AfterRelease     # 发布后一键清空可重建的部分
+加 -DryRun 只列出会删什么
+```
+
+- **定量清理（自动）**：`scripts/flutter.ps1` 每次运行前调用，距上次超过 20 小时才真正执行（标记文件 `.tools\.cache-cleanup-last-run`），失败只警告不影响编译。上限：Gradle 后台日志 7 天且总共 ≤ 50 MB、Gradle `.tmp` 残留 1 天、Gradle `transforms` > 4 GB 整个删、`app\build` > 5 GB 整个删、`app\build\test_cache` > 1 GB 删、Flutter 崩溃日志 7 天、旧版本 Gradle 的缓存/本体、安卓 SDK `.temp`、`dist` 里旧版本的安装包（保留 pubspec 当前版本和 dist 中最新版本）。
+- **Gradle 自带清理**：脚本在 `.tools\gradle-home\init.d\mengren-cache-retention.gradle` 写入保留期限（编译生成的缓存 7 天、下载的依赖 30 天没用就删）。
+- **发布后清理（必须做）**：GitHub Release 发布成功、本机 `dist\猛人快传` 已原地升级之后，最后一步运行 `-Mode AfterRelease`。它会停掉空闲的 Gradle 后台进程，删除 `app\build`、`app\windows\flutter\ephemeral`、`app\.dart_tool\flutter_build`、Gradle `transforms`、全部 Gradle 日志和残留、`dist` 里带版本号的打包临时文件夹，约释放 6–7 GB。下次编译会慢几分钟，但不需要联网。在给用户的总结里写上释放了多少空间。
+- **永远不清理**：`.tools` 里的 Flutter SDK、安卓 SDK、JDK、`pub-cache`、Gradle 下载的依赖（`caches\modules-2`）和当前版本 Gradle 本体；`dist\猛人快传`；`dist` 里最新版的 apk/zip/校验清单；`private-signing`；源代码；`.git`。脚本里有保护名单，新增要保护的目录时同步加进去。
+- 新增会产生缓存、日志或临时文件的开发工具时，同时把它的清理规则加进这个脚本。
